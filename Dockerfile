@@ -39,14 +39,9 @@ RUN pip install --upgrade pip && \
 
 COPY . .
 
-# Expose & run
-EXPOSE 8501
+# Expose port (Railway will handle the actual port)
+EXPOSE 8080
+
+# Use shell form to allow environment variable substitution
 ENTRYPOINT ["/tini", "--"]
-CMD ["streamlit", "run", "app.py", "--server.address=0.0.0.0", "--server.port=8501"]
-
-# Add health check for Railway
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8501/healthz || exit 1
-
-# Create a simple health check endpoint
-RUN echo 'import streamlit as st\nst.set_page_config(initial_sidebar_state="collapsed")\nst.title("Health Check")\nst.success("OK")' > health_check.py
+CMD streamlit run app.py --server.port=${PORT:-8080} --server.address=0.0.0.0
