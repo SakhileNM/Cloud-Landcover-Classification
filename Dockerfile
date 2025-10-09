@@ -39,9 +39,11 @@ RUN pip install --upgrade pip && \
 
 COPY . .
 
-# Expose port (Railway will handle the actual port)
+# Make start script executable
+RUN chmod +x start.sh
+
+# Expose port
 EXPOSE 8080
 
-# Use shell form to allow environment variable substitution
 ENTRYPOINT ["/tini", "--"]
-CMD streamlit run app.py --server.port=${PORT:-8080} --server.address=0.0.0.0
+CMD ["./start.sh"]
