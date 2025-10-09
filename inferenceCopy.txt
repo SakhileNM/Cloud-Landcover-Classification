@@ -1,0 +1,855 @@
+import numpy as np
+from joblib import parallel_backend
+import datacube
+import xarray as xr
+from joblib import load
+import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+from datacube.testutils.io import rio_slurp_xarray
+from deafrica_tools.bandindices import calculate_indices
+from deafrica_tools.classification import predict_xr
+import pandas as pd
+import seaborn as sns
+import warnings
+import logging
+import inspect
+import os
+import traceback
+from dask.distributed import Client, LocalCluster
+from deafrica_tools.dask import create_local_dask_cluster
+from collections import defaultdict
+from deafrica_tools.datahandling import load_ard
+from odc.stac import stac_load
+import pystac_client
+from deafrica_tools.plotting import rgb
+import streamlit as st
+from odc.stac import stac_load  # ensure this is imported at top (you already import it in file)
+
+warnings.filterwarnings("ignore")
+logging.basicConfig(level=logging.INFO)
+
+import logging
+import inspect
+from datacube.api import query as dc_query
+# other imports you already use: rio_slurp_xarray, calculate_indices, predict_xr, rgb, ...
+
+_LOG = logging.getLogger(__name__)
+
+# Reduce these values to decrease memory usage
+buffer = 0.05  # Reduced from 0.1 (smaller area)
+dask_chunks = {'x': 500, 'y': 500}  # Reduced from 1000x1000 (smaller chunks)
+
+# --- lazy datacube
+_dc = None
+def get_datacube(app_name="prediction", config=None):
+    global _dc
+    if _dc is None:
+        _LOG.info("Creating Datacube instance (lazy): app=%s", app_name)
+        # now uses the `datacube` imported above
+        _dc = datacube.Datacube(app=app_name, config=config)
+    return _dc
+
+# --- small dask helper to be called from app.py
+def init_dask_cluster(n_workers=1, threads_per_worker=1, memory_limit="32GB"):
+    cluster = LocalCluster(
+        n_workers=n_workers,
+        threads_per_worker=threads_per_worker,
+        memory_limit=memory_limit,
+        processes=False  # <--- Use threads, not processes
+    )
+    client = Client(cluster)
+    return client
+
+# --- query-compatibility helper
+def _map_query_keys_for_datacube(query):
+    """
+    Make the query keys compatible with the installed datacube.Query.
+    Returns a new dict safe to pass into dc.load.
+    """
+    # get valid keys from Query (best-effort)
+    valid_keys = getattr(dc_query.Query, "_valid_keys", None)
+    if valid_keys is None:
+        # fallback: use signature parameters (minus self)
+        sig = inspect.signature(dc_query.Query.__init__)
+        valid_keys = set(sig.parameters.keys()) - {"self", "kwargs", "like"}
+    else:
+        valid_keys = set(valid_keys)
+
+    q = dict(query)  # copy
+    # Fix 'time' shapes: allow a single year string -> expand to full year
+    if "time" in q:
+        t = q["time"]
+        # if user passed single year like '2000' or 2000
+        if isinstance(t, (str, int)) and len(str(t)) == 4:
+            year = str(t)
+            q["time"] = (f"{year}-01-01", f"{year}-12-31")
+        # if user passed a single-date string, try to coerce to tuple
+        elif isinstance(t, str) and "-" in t and len(t.split("-")) == 3:
+            # single date -> expand to full year of that date's year
+            y = t.split("-")[0]
+            q["time"] = (f"{y}-01-01", f"{y}-12-31")
+
+    # If datacube does not accept 'time' key at all, try plausible alternates:
+    if "time" in q and "time" not in valid_keys:
+        for alt in ("time_range", "time_period", "period"):
+            if alt in valid_keys:
+                q[alt] = q.pop("time")
+                _LOG.info("Mapped 'time' -> '%s' for this datacube version", alt)
+                break
+        else:
+            # as a last resort, remove unknown keys (but log heavily)
+            _LOG.warning("Datacube Query does not accept 'time'. Valid keys: %s", valid_keys)
+
+    # Remove unknown keys (but warn)
+    unknown = [k for k in q.keys() if k not in valid_keys and k not in ("product",)]
+    if unknown:
+        _LOG.warning("Dropping unknown query keys not accepted by Query: %s", unknown)
+        for k in unknown:
+            q.pop(k, None)
+    return q
+
+# Load models and training data
+S_model_path = 'S_model(1).joblib'
+L_model_path = 'L_model(1).joblib'
+training_data = "L_training_data(1).txt"
+
+try:
+    landsat_model = load(L_model_path).set_params(n_jobs=1)
+    sentinel_model = load(S_model_path).set_params(n_jobs=1)
+except Exception as e:
+    # models missing? keep placeholders and raise on prediction
+    logging.warning(f"Could not load models at import: {e}")
+    landsat_model = None
+    sentinel_model = None
+
+# Define global parameters
+buffer = 0.1
+dask_chunks = {'x': 1000, 'y': 1000}
+measurements = ['blue', 'green', 'red', 'nir', 'swir_1', 'swir_2']
+output_crs = 'epsg:6933'
+class_labels = ['Water', 'Forestry', 'Urban', 'Barren', 'Crop', 'Other']
+class_colors = {
+    'Water': 'blue',
+    'Forestry': 'green',
+    'Urban': 'red',
+    'Barren': 'yellow',
+    'Crop': 'purple',
+    'Other': 'grey'
+}
+
+# Initialize Datacube
+#dc = datacube.Datacube(app='prediction')
+dc = None # removed eager connection; use get_datacube() where needed
+
+import re
+
+# canonical bands we expect downstream
+_CANONICAL_BANDS = ['blue', 'green', 'red', 'nir', 'swir_1', 'swir_2']
+
+def _harmonize_band_names(ds, dc, products):
+    """
+    Ensure ds has canonical data_vars names: blue, green, red, nir, swir_1, swir_2.
+    Strategy:
+      1) Try to read product metadata aliases (preferred).
+      2) If aliases not found for some bands, do regex/pattern fallback on present var names.
+    Returns renamed xarray.Dataset.
+    Raises ValueError if essential bands for NDVI (red,nir) are missing after mapping.
+    """
+    present = set(ds.data_vars)
+    rename_map = {}
+
+    # --- 1) product metadata approach (best)
+    try:
+        for p in products:
+            try:
+                prod = dc.index.products.get_by_name(p)
+                meas = getattr(prod, "measurements", None)
+                # meas may be dict (name->meta) or list of dicts
+                if isinstance(meas, dict):
+                    items = [(k, v) for k, v in meas.items()]
+                else:
+                    items = []
+                    for m in (meas or []):
+                        if isinstance(m, dict):
+                            items.append((m.get("name"), m))
+                        else:
+                            # fallback: skip
+                            continue
+
+                for name, meta in items:
+                    aliases = []
+                    if isinstance(meta, dict):
+                        aliases = meta.get("aliases", []) or []
+                    # candidates to match in ds
+                    candidates = [name] + aliases
+                    for cand in candidates:
+                        if not cand:
+                            continue
+                        if cand in present:
+                            # choose canonical target if alias lists contain known canonical name
+                            target = None
+                            for can in _CANONICAL_BANDS:
+                                if can in aliases:
+                                    target = can
+                                    break
+                            if target is None:
+                                # if alias list contains a typical name (blue/green/...)
+                                for a in aliases:
+                                    la = a.lower()
+                                    if la in _CANONICAL_BANDS:
+                                        target = la
+                                        break
+                            if target is None:
+                                # e.g. name='B04' -> guess from number later
+                                continue
+                            # avoid clobber
+                            if target in present:
+                                continue
+                            rename_map[cand] = target
+                            present.remove(cand); present.add(target)
+                            break
+            except Exception:
+                # ignore product lookup failures and continue
+                continue
+    except Exception:
+        pass
+
+    # --- 2) fallback heuristics (pattern matching)
+    # Patterns map -> canonical band
+    pattern_map = {
+        'blue':  [r'\bb02\b', r'\bband_02\b', r'\bb1\b', r'\bsr_b1\b', r'\bbs_b1\b'],
+        'green': [r'\bb03\b', r'\bband_03\b', r'\bb2\b', r'\bsr_b2\b', r'\bbs_b2\b'],
+        'red':   [r'\bb04\b', r'\bband_04\b', r'\bb3\b', r'\bsr_b3\b', r'\bbs_b3\b', r'\bsr_b4\b'],
+        'nir':   [r'\bb08\b', r'\bb8a\b', r'\bb8\b', r'\bsr_b4\b', r'\bsr_b5\b', r'\bb05\b'],
+        'swir_1':[r'\bb11\b', r'\bbs_b11\b', r'\bsr_b5\b', r'\bsr_b6\b', r'\bb5\b', r'\bb6\b'],
+        'swir_2':[r'\bb12\b', r'\bbs_b12\b', r'\bsr_b7\b', r'\bb7\b']
+    }
+
+    # compile regexes
+    compiled = {k: [re.compile(p, re.I) for p in pats] for k, pats in pattern_map.items()}
+
+    # for each present var, try to assign to canonical if not already mapped
+    for var in list(ds.data_vars):
+        if var in rename_map:
+            continue
+        lower = var.lower()
+        # try exact alias-like matches first (strip prefixes)
+        for target, regex_list in compiled.items():
+            for rx in regex_list:
+                if rx.search(lower):
+                    if target in ds.data_vars and target != var:
+                        # target already present in ds -> skip to avoid overwrite
+                        continue
+                    # don't overwrite existing rename_map mapping for same target
+                    if target in rename_map.values():
+                        continue
+                    rename_map[var] = target
+                    break
+            if var in rename_map:
+                break
+
+    # apply rename
+    if rename_map:
+        _LOG.info("Applying band rename map: %s", rename_map)
+        ds = ds.rename(rename_map)
+
+    # final check: must have red & nir to compute NDVI
+    final_vars = set(ds.data_vars)
+    missing_for_ndvi = [b for b in ('red', 'nir') if b not in final_vars]
+    if missing_for_ndvi:
+        # Helpful message: show what canonical-like names we do have
+        found = {v for v in final_vars if v in _CANONICAL_BANDS}
+        raise ValueError(
+            f"Please verify that all bands required to compute NDVI are present in ds. "
+            f"Missing: {missing_for_ndvi}. Present canonical bands: {sorted(found)}. "
+            f"Full variables: {sorted(list(final_vars))}"
+        )
+
+    return ds
+
+
+# --- query-compatibility helper ---
+def _map_query_keys_for_datacube(query):
+    """
+    Make the query keys compatible with the installed datacube.Query.
+    Returns a new dict safe to pass into dc.load.
+    """
+    # best-effort: gather valid keys from current datacube.Query
+    valid_keys = getattr(dc_query.Query, "_valid_keys", None)
+    if valid_keys is None:
+        sig = inspect.signature(dc_query.Query.__init__)
+        valid_keys = set(sig.parameters.keys()) - {"self", "kwargs", "like"}
+    else:
+        valid_keys = set(valid_keys)
+
+    q = dict(query)  # copy
+
+    # Allow callers to pass a single year as string/int -> expand to full-year
+    if "time" in q:
+        t = q["time"]
+        if isinstance(t, (str, int)) and len(str(t)) == 4:
+            year = str(t)
+            q["time"] = (f"{year}-01-01", f"{year}-12-31")
+        elif isinstance(t, str) and "-" in t and len(t.split("-")) == 3:
+            y = t.split("-")[0]
+            q["time"] = (f"{y}-01-01", f"{y}-12-31")
+
+    # If this datacube.Query doesn't accept 'time', map to plausible alternates.
+    if "time" in q and "time" not in valid_keys:
+        for alt in ("time_range", "time_period", "period"):
+            if alt in valid_keys:
+                q[alt] = q.pop("time")
+                _LOG.info("Mapped 'time' -> '%s' for this datacube version", alt)
+                break
+        else:
+            _LOG.warning("Datacube Query does not accept 'time'. Valid keys: %s", valid_keys)
+
+    # Drop unknown keys (but log so user can see what's being removed)
+    unknown = [k for k in q.keys() if k not in valid_keys and k not in ("product", "measurements")]
+    if unknown:
+        _LOG.warning("Dropping unknown query keys not accepted by Query: %s", unknown)
+        for k in unknown:
+            q.pop(k, None)
+
+    return q
+
+def get_geomad_product_for_year(year):
+    year = int(year)
+    if 1984 <= year <= 2012:
+        return 'gm_ls5_ls7_annual'
+    elif 2017 <= year:
+        return 'gm_s2_annual'
+    else:
+        return None
+
+def feature_layers(query, model):
+    """
+    Robust loader: tries datacube.load, then load_ard (single product), then STAC items -> odc.stac.load.
+    Returns an xarray.Dataset with canonical bands + computed indices (+ slope if available).
+    """
+    try:
+        # local imports (safe if top-level imports are missing)
+        from deafrica_tools.datahandling import load_ard
+        from odc.stac import load as odc_stac_load, configure_rio
+        from pystac_client import Client as STACClient
+    except Exception:
+        # If one of these isn't installed, we'll rely on datacube.load only and raise helpful errors later
+        STACClient = None
+        load_ard = None
+        odc_stac_load = None
+        configure_rio = None
+
+    dc = get_datacube(app_name='feature_layers')
+
+    # Determine year from query
+    year = None
+    if "time" in query:
+        t = query["time"]
+        if isinstance(t, (str, int)) and len(str(t)) == 4:
+            year = int(t)
+        elif isinstance(t, (tuple, list)) and len(t) == 2:
+            year = int(str(t[0])[:4])
+    if year is None:
+        raise ValueError("Could not determine year from query.")
+
+    product = get_geomad_product_for_year(year)
+    if product is None:
+        raise ValueError(f"No GeoMAD product available for year {year} (valid: 1984–2012, 2017–now)")
+
+    # Keep original query for STAC fallbacks (mapping step may remove keys)
+    orig_query = dict(query or {})
+
+    # Map keys for this datacube version (may change or remove keys)
+    qc = _map_query_keys_for_datacube(orig_query)
+
+    # Prefer *not* to pass resolution/output_crs for pre-gridded products
+    for k in ('resolution', 'output_crs'):
+        qc.pop(k, None)
+
+    _LOG.info("Datacube query (mapped): %s", qc)
+
+    ds = None
+    # 1) Try datacube load (preferred)
+    try:
+        ds = dc.load(product=product,
+                     measurements=measurements,
+                     output_crs=output_crs,
+                     dask_chunks=dask_chunks,
+                     **qc)
+        _LOG.info("dc.load: returned dataset vars: %s", list(getattr(ds, 'data_vars', {}).keys()))
+    except Exception as e:
+        _LOG.warning("dc.load combined products failed: %s", e)
+        # try individual products as diagnostics (but don't stop)
+        for p in product:
+            try:
+                tds = dc.load(product=p, measurements=measurements, **qc)
+                _LOG.info("dc.load single product %s -> vars: %s", p, list(getattr(tds, 'data_vars', {}).keys()))
+                if tds is not None and len(getattr(tds, 'data_vars', {})) > 0:
+                    ds = tds
+                    break
+            except Exception:
+                _LOG.debug("single-product dc.load failed for %s", p, exc_info=True)
+
+    # If datacube mapping removed the query or ds empty -> try load_ard or STAC
+    need_fallback = (not qc) or (ds is None) or (len(getattr(ds, 'data_vars', {})) == 0)
+    if need_fallback:
+        _LOG.warning("Datacube returned no data or mapping removed keys; attempting fallbacks.")
+
+        # build bbox/time from original query for STAC / load_ard fallback
+        bbox = None
+        time_arg = None
+        try:
+            if 'x' in orig_query and 'y' in orig_query:
+                x = orig_query['x']; y = orig_query['y']
+                if isinstance(x, (list, tuple)) and isinstance(y, (list, tuple)):
+                    minx, maxx = float(min(x)), float(max(x))
+                    miny, maxy = float(min(y)), float(max(y))
+                else:
+                    # center point - create small bbox using buffer
+                    cx = float(x if not isinstance(x, (list, tuple)) else x[0])
+                    cy = float(y if not isinstance(y, (list, tuple)) else y[0])
+                    minx, maxx = cx - buffer, cx + buffer
+                    miny, maxy = cy - buffer, cy + buffer
+                bbox = [minx, miny, maxx, maxy]
+            if 'time' in orig_query:
+                t = orig_query['time']
+                if isinstance(t, (list, tuple)) and len(t) == 2:
+                    time_arg = f"{t[0]}/{t[1]}"
+                elif isinstance(t, str) and len(t) == 4 and t.isdigit():
+                    time_arg = f"{t}-01-01/{t}-12-31"
+                elif isinstance(t, int):
+                    time_arg = f"{int(t)}-01-01/{int(t)}-12-31"
+                else:
+                    # attempt to normalise other shapes
+                    time_arg = str(t)
+        except Exception as e:
+            _LOG.warning("Could not build bbox/time for fallback: %s", e)
+
+        # 2) Try load_ard with each product individually (defensive)
+        if load_ard is not None:
+            for p in product:
+                try:
+                    _LOG.info("Attempting load_ard for product=%s bbox=%s time=%s", p, bbox, time_arg)
+                    # signature differences exist across deafrica_tools versions; try common args
+                    try:
+                        ds_try = load_ard(dc=dc, products=[p], measurements=measurements,
+                                          bbox=bbox, time=time_arg, output_crs=output_crs,
+                                          dask_chunks=dask_chunks)
+                    except TypeError:
+                        # relaxed call for older/newer versions
+                        ds_try = load_ard(products=[p], bbox=bbox, time=time_arg, measurements=measurements)
+                    _LOG.info("load_ard (product=%s) returned vars: %s", p, list(getattr(ds_try, 'data_vars', {}).keys()))
+                    if ds_try is not None and len(getattr(ds_try, 'data_vars', {})) > 0:
+                        ds = ds_try
+                        break
+                except Exception as e:
+                    _LOG.debug("load_ard failed for product=%s: %s", p, e, exc_info=True)
+
+        # 3) If still nothing, do STAC items search + odc.stac.load(items=...)
+        if (ds is None or len(getattr(ds, 'data_vars', {})) == 0) and STACClient is not None and odc_stac_load is not None:
+            try:
+                # Configure rio for DE Africa S3
+                try:
+                    if configure_rio is not None:
+                        configure_rio(cloud_defaults=True, aws={"aws_unsigned": True}, AWS_S3_ENDPOINT="s3.af-south-1.amazonaws.com")
+                except Exception:
+                    _LOG.debug("configure_rio failed (ignored)", exc_info=True)
+
+                stac_url = "https://explorer.digitalearth.africa/stac"
+                client = STACClient.open(stac_url)
+                _LOG.info("Querying STAC catalog %s collections=%s bbox=%s time=%s", stac_url, product, bbox, time_arg)
+                
+                # Search with limit=1 to get minimal data first
+                search = client.search(collections=[product], bbox=bbox, datetime=time_arg, max_items=1)
+                items = list(search.get_items())
+                _LOG.info("STAC search found %d items", len(items))
+                
+                if items:
+                    STAC_BAND_MAP = {
+                        'gm_ls5_ls7_annual': ['SR_B1', 'SR_B2', 'SR_B3', 'SR_B4', 'SR_B5', 'SR_B7'],
+                        'gm_ls8_ls9_annual': ['SR_B2', 'SR_B3', 'SR_B4', 'SR_B5', 'SR_B6', 'SR_B7'],
+                        'gm_s2_annual':      ['B02', 'B03', 'B04', 'B08', 'B11', 'B12'],
+                    }
+                    stac_bands = STAC_BAND_MAP.get(product, [])
+                    
+                    # Load with smaller chunks and simpler configuration
+                    ds_try = odc_stac_load(
+                        items, 
+                        measurements=stac_bands, 
+                        resampling='nearest',
+                        chunks={'x': 500, 'y': 500}  # Smaller chunks
+                    )
+                    
+                    _LOG.info("odc.stac.load returned vars: %s", list(getattr(ds_try, 'data_vars', {}).keys()))
+                    if ds_try is not None and len(getattr(ds_try, 'data_vars', {})) > 0:
+                        ds = ds_try
+                else:
+                    _LOG.warning("STAC search returned 0 items for collections=%s bbox=%s time=%s", product, bbox, time_arg)
+            except Exception as e:
+                _LOG.exception("STAC item fallback failed: %s", e)
+
+    # At this point, if no dataset, give a clear error
+    if ds is None or len(getattr(ds, 'data_vars', {})) == 0:
+        # attempt to list datacube-known products for diagnostics
+        try:
+            available = [pr.name for pr in dc.index.products.get_all()]
+        except Exception:
+            available = []
+        raise ValueError(
+            "No data loaded from Datacube for query: {}\nProducts tried: {}\n"
+            "Check: 1) location/time coverage, 2) product availability in this datacube.\n"
+            "Datacube-known products (sample): {}\nLoaded dataset variables (if any): {}\n".format(
+                qc, product, available[:20], getattr(ds, 'data_vars', {}) if ds is not None else None
+            )
+        )
+
+    # Harmonize band names to canonical expectations
+    ds = _harmonize_band_names(ds, dc, product)
+    _LOG.info("Bands after harmonisation: %s", list(ds.data_vars))
+
+    # Select canonical bands, ensure we have at least red+nir for NDVI
+    selected_bands = [b for b in _CANONICAL_BANDS if b in ds.data_vars]
+    if 'red' not in ds.data_vars or 'nir' not in ds.data_vars:
+        raise ValueError(f"Missing 'red' or 'nir' after harmonisation. Available: {list(ds.data_vars)}")
+
+    ds = ds[selected_bands]
+
+    # compute indices (same logic as your notebook)
+    satellite_mission = 's2' if model == sentinel_model else 'ls'
+    da = calculate_indices(ds, index=['NDVI', 'LAI', 'MNDWI'], drop=False, satellite_mission=satellite_mission)
+
+    # attach slope (best-effort)
+    try:
+        url_slope = "https://deafrica-input-datasets.s3.af-south-1.amazonaws.com/srtm_dem/srtm_africa_slope.tif"
+        slope = rio_slurp_xarray(url_slope, geobox=ds.geobox)
+        slope = slope.to_dataset(name='slope').chunk(dask_chunks)
+        result = xr.merge([da, slope], compat='override')
+    except Exception:
+        _LOG.warning("Could not load slope dataset; returning indices without slope")
+        result = da
+
+    # Ensure the result has dask arrays before returning
+    try:
+        result = result.chunk(dask_chunks)
+        _LOG.info("Feature layers data chunked as dask arrays")
+    except Exception as e:
+        _LOG.warning("Could not chunk result as dask arrays: %s", e)
+
+    return result.squeeze()
+
+def predict_for_location(lat, lon, year):
+    """
+    Build canonical datacube query and call feature_layers -> predict_xr.
+    Returns the predicted xarray.Dataset (including input bands if return_input=True).
+    """
+    try:
+        _LOG.info("predict_for_location called with lat=%r lon=%r year=%r", lat, lon, year)
+
+        # normalize inputs
+        if isinstance(lat, dict) and lon is None and year is None:
+            d = lat
+            lat = d.get('lat') or d.get('y') or d.get('latitude')
+            lon = d.get('lon') or d.get('x') or d.get('longitude')
+            year = d.get('year') or d.get('time')
+
+        try:
+            lat = float(lat)
+            lon = float(lon)
+        except Exception:
+            raise ValueError(f"Invalid lat/lon: lat={lat} ({type(lat)}), lon={lon} ({type(lon)})")
+
+        # coerce year to YYYY string
+        try:
+            year_int = int(str(year)[:4])
+            year_str = str(year_int)
+        except Exception:
+            raise ValueError(f"Cannot parse year from {repr(year)}")
+
+        # choose model same as notebook
+        model = landsat_model if year_int < 2017 else sentinel_model
+        if model is None:
+            raise RuntimeError("Model(s) not loaded (landsat_model/sentinel_model are None)")
+
+        # build canonical bbox query
+        query = {
+            'x': (lon - buffer, lon + buffer),
+            'y': (lat + buffer, lat - buffer),
+            'time': year_str
+        }
+        _LOG.info("predict_for_location: built datacube query: %s", query)
+
+        # call feature loader
+        data = feature_layers(query, model)
+        if data is None or len(data.data_vars) == 0:
+            raise RuntimeError(f"No feature data for {lat},{lon},{year_str}")
+
+        # expected features
+        expected_features = list(measurements) + ['NDVI', 'LAI', 'MNDWI', 'slope']
+        present = [f for f in expected_features if f in data.data_vars]
+        if ('red' not in data.data_vars) or ('nir' not in data.data_vars):
+            raise RuntimeError(f"Missing critical bands red/nir in loaded data: {list(data.data_vars)}")
+
+        # select features that exist (preserve order)
+        features = [f for f in expected_features if f in data.data_vars]
+        data = data[features]
+
+        # Convert to numpy arrays to avoid dask issues
+        _LOG.info("Converting data to numpy arrays for prediction")
+        data_numpy = data.compute() if hasattr(data, 'compute') else data
+
+        # Use a simpler approach without dask for prediction
+        _LOG.info("Running prediction without dask backend")
+        predicted = predict_xr(model, data_numpy, proba=True, persist=False, clean=True, return_input=True)
+
+        # If the result is a dask array, compute it
+        if hasattr(predicted, 'compute'):
+            predicted = predicted.compute()
+
+        _LOG.info("Prediction successful for %s,%s,%s", lat, lon, year_str)
+        return predicted
+
+    except Exception as e:
+        tb = traceback.format_exc()
+        raise RuntimeError(f"Prediction failed for {year}: {e}\nTraceback:\n{tb}")
+
+
+def plot_year_result(prediction_data, year):
+    """Generate 3-panel plot for a single year"""
+    fig, axes = plt.subplots(1, 3, figsize=(24, 8))
+    
+    # Classified image
+    cmap = mcolors.ListedColormap([class_colors[label] for label in class_labels])
+    norm = mcolors.BoundaryNorm(range(len(class_labels) + 1), cmap.N)
+    im = axes[0].imshow(prediction_data.Predictions, cmap=cmap, norm=norm)
+    cbar = fig.colorbar(im, ax=axes[0], ticks=range(len(class_labels)))
+    cbar.ax.set_yticklabels(class_labels)
+    axes[0].set_title(f'Classification ({year})')
+    
+    # True color image
+    rgb(prediction_data, bands=['red', 'green', 'blue'], ax=axes[1], percentile_stretch=(0.01, 0.99))
+    axes[1].set_title('True Color')
+    
+    # Probability map
+    prob_plot = prediction_data.Probabilities.plot(
+        ax=axes[2], 
+        cmap='magma', 
+        vmin=0, 
+        vmax=100, 
+        add_labels=False, 
+        add_colorbar=False
+    )
+    cbar = fig.colorbar(prob_plot, ax=axes[2])
+    cbar.set_label('Probability (%)')
+    axes[2].set_title('Class Probabilities')
+    
+    plt.tight_layout()
+    return fig
+
+def compute_transition_matrix(pred1, pred2, class_labels):
+    """Compute transition matrix between two predictions"""
+    pred1_flat = pred1.Predictions.values.flatten()
+    pred2_flat = pred2.Predictions.values.flatten()
+    
+    num_classes = len(class_labels)
+    transition_matrix = np.zeros((num_classes, num_classes), dtype=int)
+    
+    for i in range(len(pred1_flat)):
+        class_from = int(pred1_flat[i])
+        class_to = int(pred2_flat[i])
+        transition_matrix[class_from, class_to] += 1
+            
+    return transition_matrix
+
+def normalize_transition_matrix(matrix):
+    """Normalize transition matrix to percentages"""
+    row_sums = matrix.sum(axis=1, keepdims=True)
+    percentage_matrix = np.divide(
+        matrix, 
+        row_sums, 
+        out=np.zeros_like(matrix, dtype=float), 
+        where=row_sums!=0
+    )
+    return percentage_matrix * 100
+
+def plot_transition_matrix(matrix, class_labels, year_from, year_to):
+    """Plot transition matrix as heatmap"""
+    fig, ax = plt.subplots(figsize=(10, 8))
+    sns.heatmap(
+        matrix, 
+        annot=True, 
+        fmt='.2f', 
+        cmap='Blues', 
+        xticklabels=class_labels, 
+        yticklabels=class_labels,
+        ax=ax
+    )
+    ax.set_title(f'Land Cover Transitions: {year_from} → {year_to}')
+    ax.set_xlabel(f'Class in {year_to}')
+    ax.set_ylabel(f'Class in {year_from}')
+    return fig
+
+def predict_for_years(lat, lon, years, status_callback=None):
+    """Main prediction function for Streamlit with status updates."""
+    years = sorted(years)
+    predictions = {}
+    figures = []
+    areas_per_class = {}
+    transition_matrices = {}
+
+    if status_callback:
+        status_callback("Starting predictions...")
+
+    # Run predictions for all years
+    for idx, year in enumerate(years):
+        try:
+            if status_callback:
+                status_callback(f"Predicting for year {year} ({idx+1}/{len(years)})...")
+            prediction = predict_for_location(lat, lon, year)
+            predictions[year] = prediction
+
+            # --- Check for empty prediction ---
+            if (
+                prediction is None or
+                not hasattr(prediction, "Predictions") or
+                prediction.Predictions.size == 0
+            ):
+                if status_callback:
+                    status_callback(f"No prediction data for year {year}. Skipping.")
+                continue
+
+            if status_callback:
+                status_callback(f"Plotting results for year {year}...")
+            fig = plot_year_result(prediction, year)
+            figures.append(fig)
+
+            area_per_pixel = 900 if year < 2017 else 100
+            classes = prediction.Predictions.values.ravel()
+            unique, counts = np.unique(classes, return_counts=True)
+            areas_per_class[year] = {class_labels[int(cls)]: count * area_per_pixel 
+                                     for cls, count in zip(unique, counts)}
+
+            if status_callback:
+                status_callback(f"Completed year {year}.")
+
+        except Exception as e:
+            if status_callback:
+                status_callback(f"Error processing year {year}: {str(e)}")
+            raise RuntimeError(f"Year {year} processing failed: {str(e)}")
+
+    if not areas_per_class:
+        if status_callback:
+            status_callback("No successful predictions for any year. Please try a different location or year.")
+        raise RuntimeError("No successful predictions for any year. Please try a different location or year.")
+
+    if status_callback:
+        status_callback("Generating area summary plot...")
+    df_areas = pd.DataFrame(areas_per_class).T.fillna(0)
+    fig_area, ax = plt.subplots(figsize=(12, 8))
+    df_areas.plot(kind='bar', stacked=True, ax=ax, 
+                 color=[class_colors[label] for label in class_labels])
+    ax.set_title('Land Cover Area Over Time')
+    ax.set_xlabel('Year')
+    ax.set_ylabel('Area (m²)')
+    ax.legend(title='Classes', bbox_to_anchor=(1.05, 1))
+    plt.tight_layout()
+    figures.append(fig_area)
+
+    if status_callback:
+        status_callback("Generating area difference plot...")
+    df_diff = df_areas.diff().dropna()
+    fig_diff, ax = plt.subplots(figsize=(12, 8))
+    df_diff.plot(kind='bar', ax=ax, color=[class_colors[label] for label in class_labels])
+    ax.set_title('Yearly Area Changes')
+    ax.set_xlabel('Year')
+    ax.set_ylabel('Area Change (m²)')
+    ax.legend(title='Classes', bbox_to_anchor=(1.05, 1))
+    plt.tight_layout()
+    figures.append(fig_diff)
+
+    # Transition matrices (for consecutive years)
+    for i in range(len(years) - 1):
+        year_from = years[i]
+        year_to = years[i+1]
+        if status_callback:
+            status_callback(f"Computing transitions: {year_from} → {year_to}...")
+        matrix = compute_transition_matrix(
+            predictions[year_from], 
+            predictions[year_to],
+            class_labels
+        )
+        norm_matrix = normalize_transition_matrix(matrix)
+        fig_trans = plot_transition_matrix(
+            norm_matrix, 
+            class_labels, 
+            year_from, 
+            year_to
+        )
+        transition_matrices[f"{year_from}-{year_to}"] = norm_matrix
+        figures.append(fig_trans)
+
+    if status_callback:
+        status_callback("All processing complete.")
+
+    return predictions, figures, areas_per_class, transition_matrices
+
+
+
+
+
+
+
+
+
+
+
+
+
+'''
+Current run:
+2025-09-25 13:23:27.764 | 
+2025-09-25 13:23:27.764 | Collecting usage statistics. To deactivate, set browser.gatherUsageStats to false.
+2025-09-25 13:23:27.764 | 
+2025-09-25 13:23:28.118 | 
+2025-09-25 13:23:28.118 |   You can now view your Streamlit app in your browser.
+2025-09-25 13:23:28.118 | 
+2025-09-25 13:23:28.118 |   URL: http://0.0.0.0:8501
+2025-09-25 13:23:28.118 | 
+2025-09-25 13:25:21.546 | INFO:inference:predict_for_location called with lat=-33.970697997361626 lon=19.231567382812504 year=2012
+2025-09-25 13:25:21.592 | INFO:inference:predict_for_location: built datacube query: {'x': (19.131567382812502, 19.331567382812505), 'y': (-33.870697997361624, -34.07069799736163), 'time': '2012'}
+2025-09-25 13:25:21.593 | INFO:inference:Creating Datacube instance (lazy): app=feature_layers
+2025-09-25 13:25:25.772 | WARNING:inference:Datacube Query does not accept 'time'. Valid keys: {'product', 'search_terms', 'geopolygon', 'index'}
+2025-09-25 13:25:25.773 | WARNING:inference:Dropping unknown query keys not accepted by Query: ['x', 'y', 'time']
+2025-09-25 13:25:25.773 | INFO:inference:Datacube query (mapped): {}
+2025-09-25 13:25:25.824 | INFO:inference:dc.load: returned dataset vars: []
+2025-09-25 13:25:25.824 | WARNING:inference:Datacube returned no data or mapping removed keys; attempting fallbacks.
+2025-09-25 13:25:25.824 | INFO:inference:Attempting load_ard for product=g bbox=[19.131567382812502, -34.07069799736163, 19.331567382812505, -33.870697997361624] time=2012-01-01/2012-12-31
+2025-09-25 13:25:25.824 | INFO:inference:Attempting load_ard for product=m bbox=[19.131567382812502, -34.07069799736163, 19.331567382812505, -33.870697997361624] time=2012-01-01/2012-12-31
+2025-09-25 13:25:25.824 | INFO:inference:Attempting load_ard for product=_ bbox=[19.131567382812502, -34.07069799736163, 19.331567382812505, -33.870697997361624] time=2012-01-01/2012-12-31
+2025-09-25 13:25:25.824 | INFO:inference:Attempting load_ard for product=l bbox=[19.131567382812502, -34.07069799736163, 19.331567382812505, -33.870697997361624] time=2012-01-01/2012-12-31
+2025-09-25 13:25:25.824 | INFO:inference:Attempting load_ard for product=s bbox=[19.131567382812502, -34.07069799736163, 19.331567382812505, -33.870697997361624] time=2012-01-01/2012-12-31
+2025-09-25 13:25:25.825 | INFO:inference:Attempting load_ard for product=5 bbox=[19.131567382812502, -34.07069799736163, 19.331567382812505, -33.870697997361624] time=2012-01-01/2012-12-31
+2025-09-25 13:25:25.825 | INFO:inference:Attempting load_ard for product=_ bbox=[19.131567382812502, -34.07069799736163, 19.331567382812505, -33.870697997361624] time=2012-01-01/2012-12-31
+2025-09-25 13:25:25.826 | INFO:inference:Attempting load_ard for product=l bbox=[19.131567382812502, -34.07069799736163, 19.331567382812505, -33.870697997361624] time=2012-01-01/2012-12-31
+2025-09-25 13:25:25.826 | INFO:inference:Attempting load_ard for product=s bbox=[19.131567382812502, -34.07069799736163, 19.331567382812505, -33.870697997361624] time=2012-01-01/2012-12-31
+2025-09-25 13:25:25.826 | INFO:inference:Attempting load_ard for product=7 bbox=[19.131567382812502, -34.07069799736163, 19.331567382812505, -33.870697997361624] time=2012-01-01/2012-12-31
+2025-09-25 13:25:25.826 | INFO:inference:Attempting load_ard for product=_ bbox=[19.131567382812502, -34.07069799736163, 19.331567382812505, -33.870697997361624] time=2012-01-01/2012-12-31
+2025-09-25 13:25:25.826 | INFO:inference:Attempting load_ard for product=a bbox=[19.131567382812502, -34.07069799736163, 19.331567382812505, -33.870697997361624] time=2012-01-01/2012-12-31
+2025-09-25 13:25:25.826 | INFO:inference:Attempting load_ard for product=n bbox=[19.131567382812502, -34.07069799736163, 19.331567382812505, -33.870697997361624] time=2012-01-01/2012-12-31
+2025-09-25 13:25:25.826 | INFO:inference:Attempting load_ard for product=n bbox=[19.131567382812502, -34.07069799736163, 19.331567382812505, -33.870697997361624] time=2012-01-01/2012-12-31
+2025-09-25 13:25:25.826 | INFO:inference:Attempting load_ard for product=u bbox=[19.131567382812502, -34.07069799736163, 19.331567382812505, -33.870697997361624] time=2012-01-01/2012-12-31
+2025-09-25 13:25:25.826 | INFO:inference:Attempting load_ard for product=a bbox=[19.131567382812502, -34.07069799736163, 19.331567382812505, -33.870697997361624] time=2012-01-01/2012-12-31
+2025-09-25 13:25:25.827 | INFO:inference:Attempting load_ard for product=l bbox=[19.131567382812502, -34.07069799736163, 19.331567382812505, -33.870697997361624] time=2012-01-01/2012-12-31
+2025-09-25 13:25:26.278 | INFO:inference:Querying STAC catalog https://explorer.digitalearth.africa/stac collections=gm_ls5_ls7_annual bbox=[19.131567382812502, -34.07069799736163, 19.331567382812505, -33.870697997361624] time=2012-01-01/2012-12-31
+2025-09-25 13:25:26.606 | INFO:inference:STAC search found 1 items
+2025-09-25 13:25:27.062 | INFO:inference:odc.stac.load returned vars: ['SR_B1', 'SR_B2', 'SR_B3', 'SR_B4', 'SR_B5', 'SR_B7']
+2025-09-25 13:25:27.084 | INFO:inference:Applying band rename map: {'SR_B1': 'blue', 'SR_B2': 'green', 'SR_B3': 'red', 'SR_B4': 'nir', 'SR_B5': 'swir_1', 'SR_B7': 'swir_2'}
+2025-09-25 13:25:27.085 | INFO:inference:Bands after harmonisation: ['blue', 'green', 'red', 'nir', 'swir_1', 'swir_2']
+2025-09-25 13:25:31.397 | INFO:inference:Feature layers data chunked as dask arrays
+2025-09-25 13:25:31.408 | INFO:inference:Converting data to numpy arrays for prediction
+2025-09-25 13:26:02.051 | INFO:inference:Running prediction without dask backend
+2025-09-25 13:33:38.360 | INFO:inference:Prediction successful for -33.970697997361626,19.231567382812504,2012
+'''
+
+
+
+# ERROR: An error occurred during prediction: index 0 is out of bounds for axis 0 with size 0

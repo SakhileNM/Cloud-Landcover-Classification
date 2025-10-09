@@ -1,0 +1,34 @@
+# Streamlit UI
+streamlit
+streamlit-folium
+
+# Open Data Cube & geospatial
+datacube
+xarray
+rasterio
+affine
+deafrica-tools
+psycopg2-binary>=2.9
+
+# Parallel compute
+dask[distributed]
+
+# Machine learning & model I/O
+scikit-learn
+joblib
+
+# Data handling & plotting
+pandas
+matplotlib
+seaborn
+rio-cogeo
+rioxarray
+numpy
+
+# PDF generation
+opencv-python-headless
+Pillow
+reportlab
+
+# Cloud compatibility
+gunicorn==21.2.0

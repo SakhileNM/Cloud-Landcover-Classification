@@ -1,0 +1,24 @@
+name: rf_app
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - streamlit
+  - streamlit-folium
+  - datacube
+  - rasterio
+  - gdal
+  - deafrica-tools
+  - dask
+  - distributed
+  - joblib
+  - scikit-learn
+  - pandas
+  - matplotlib
+  - seaborn
+  - pims
+  - pip
+  - pip:
+    - xarray
+    - affine
