@@ -1,33 +1,33 @@
 # Streamlit UI
-streamlit
-streamlit-folium
+streamlit==1.28.0
+streamlit-folium==0.15.1
 
-# Open Data Cube & geospatial
-datacube
-xarray
-rasterio
-affine
-deafrica-tools
-psycopg2-binary>=2.9
+# Open Data Cube & geospatial - COMPATIBLE VERSIONS
+datacube==1.8.6
+xarray==2023.1.0
+rasterio==1.3.4  # Compatible with GDAL 3.4
+affine==2.4.0
+deafrica-tools==2.1.0  # Older but compatible version
+psycopg2-binary==2.9.7
 
 # Parallel compute
-dask[distributed]
+dask[distributed]==2023.1.0
 
 # Machine learning & model I/O
-scikit-learn
-joblib
+scikit-learn==1.2.0
+joblib==1.2.0
 
 # Data handling & plotting
-pandas
-matplotlib
-seaborn
-rio-cogeo
-rioxarray
-numpy
+pandas==1.5.3
+matplotlib==3.6.0
+seaborn==0.12.0
+rio-cogeo==3.5.0
+rioxarray==0.13.0
+numpy==1.24.0
 
 # PDF generation
-opencv-python-headless
-Pillow
+Pillow==9.5.0
+opencv-python-headless==4.7.0.72
 reportlab
 
 # Cloud compatibility
