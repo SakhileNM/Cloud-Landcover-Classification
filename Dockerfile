@@ -16,7 +16,7 @@ RUN chmod +x /tini
 RUN apt update && \
     apt install -y --no-install-recommends \
       python3-full python3-dev python3-venv python3-pip \
-      build-essential postgresql-client \
+      build-essential postgresql-client curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Create & activate venv
@@ -39,11 +39,7 @@ RUN pip install --upgrade pip && \
 
 COPY . .
 
-# Make start script executable
-RUN chmod +x start.sh
-
-# Expose port
-EXPOSE 8080
-
+# Expose & run
+EXPOSE 8501
 ENTRYPOINT ["/tini", "--"]
-CMD ["./start.sh"]
+CMD ["streamlit", "run", "app.py", "--server.address=0.0.0.0", "--server.port=8501"]
