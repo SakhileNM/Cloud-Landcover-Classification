@@ -14,7 +14,7 @@
 3. Configure VCN with ports 22 (SSH) and 8501 (App) open
 4. Connect via SSH and run:
    ```bash
-   git clone https://github.com/your-repo/landcover-oracle.git
-   cd landcover-oracle
+   git clone https://github.com/SakhileNM/Cloud-Landcover-Classification.git
+   cd Cloud-Landcover-Classification
    docker build -t landcover-app .
    docker run -d -p 8501:8501 --name landcover-container landcover-app
