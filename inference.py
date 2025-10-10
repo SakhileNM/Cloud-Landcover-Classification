@@ -108,12 +108,33 @@ os.environ.update({
 # --- lazy datacube
 _dc = None
 
+import os
+from datacube import Datacube
+
+_dc = None
+
+print(f"🌍 Running in {'CLOUD' if os.getenv('ORACLE_CLOUD') else 'LOCAL'} mode")
+_LOG.info(f"Running in {'cloud' if os.getenv('ORACLE_CLOUD') else 'local'} mode.")
+
 def get_datacube(app_name="prediction", config=None):
     global _dc
     if _dc is None:
         _LOG.info("Creating Datacube instance (lazy): app=%s", app_name)
-        _dc = datacube.Datacube(app=app_name, config=config)
+
+        if os.getenv("ORACLE_CLOUD", "").lower() in ("1", "true", "yes"):
+            _LOG.info("Using in-memory Datacube index (Oracle Cloud mode)")
+            config = {"index_driver": "memory"}
+        elif config is None:
+            _LOG.info("Using PostgreSQL index (local mode)")
+
+        try:
+            _dc = datacube.Datacube(app=app_name, config=config)
+        except Exception as e:
+            _LOG.warning("Datacube initialization failed (%s): %s", type(e).__name__, e)
+            _dc = None
+
     return _dc
+
 
 # --- small dask helper to be called from app.py
 def init_dask_cluster(n_workers=1, threads_per_worker=1, memory_limit="32GB"):
@@ -358,9 +379,15 @@ def feature_layers(query, model):
             resampling='cubic'  # Use cubic resampling for better quality
         )
 
-    # Harmonize band names
-    ds = _harmonize_band_names(ds, dc, [product])
-    _LOG.info("Bands after harmonisation: %s", list(ds.data_vars))
+    # Harmonize band names (Datacube-aware)
+    if dc is not None:
+        try:
+            ds = _harmonize_band_names(ds, dc, [product])
+            _LOG.info("Bands after harmonisation (with Datacube): %s", list(ds.data_vars))
+        except Exception as e:
+            _LOG.warning("Band harmonisation using Datacube failed: %s — falling back to raw names", e)
+    else:
+        _LOG.info("Datacube not available — skipping band harmonisation")
 
     # Ensure critical bands exist
     selected_bands = [b for b in _CANONICAL_BANDS if b in ds.data_vars]
