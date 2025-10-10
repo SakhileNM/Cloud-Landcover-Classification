@@ -121,17 +121,28 @@ def get_datacube(app_name="prediction", config=None):
     if _dc is None:
         _LOG.info("Creating Datacube instance (lazy): app=%s", app_name)
 
+        # Use memory-based index for cloud deployment
         if os.getenv("ORACLE_CLOUD", "").lower() in ("1", "true", "yes"):
             _LOG.info("Using in-memory Datacube index (Oracle Cloud mode)")
             config = {"index_driver": "memory"}
         elif config is None:
             _LOG.info("Using PostgreSQL index (local mode)")
+            # For local development, use default config
+            config = None
 
         try:
             _dc = datacube.Datacube(app=app_name, config=config)
+            _LOG.info("Datacube initialized successfully with config: %s", config)
         except Exception as e:
             _LOG.warning("Datacube initialization failed (%s): %s", type(e).__name__, e)
-            _dc = None
+            # Fallback to memory index if PostgreSQL fails
+            try:
+                _LOG.info("Attempting fallback to memory index...")
+                _dc = datacube.Datacube(app=app_name, config={"index_driver": "memory"})
+                _LOG.info("Fallback to memory index successful")
+            except Exception as fallback_error:
+                _LOG.warning("Memory index fallback also failed: %s", fallback_error)
+                _dc = None
 
     return _dc
 
@@ -206,10 +217,8 @@ def _harmonize_band_names(ds, dc, products):
     """
     Ensure the dataset `ds` contains canonical band names:
     ['blue','green','red','nir','swir_1','swir_2'].
-    The loader (stac_load) will usually return canonical names if stac_cfg aliases
-    are used; this function performs checks and fallback renames.
+    This function now works with or without Datacube.
     """
-    # if ds is None, just return
     if ds is None:
         return ds
 
@@ -221,7 +230,9 @@ def _harmonize_band_names(ds, dc, products):
     # attempt to rename common sensor band names to canonical names
     rename_map = {}
     inv_map = {}
-    # build reverse map using STAC_BAND_ALIASES for products list
+    
+    # Build reverse map using STAC_BAND_ALIASES for products list
+    # This works without Datacube
     for p in products:
         aliases = STAC_BAND_ALIASES.get(p, {})
         for canon, asset_name in aliases.items():
@@ -247,6 +258,7 @@ def _harmonize_band_names(ds, dc, products):
     if rename_map:
         try:
             ds = ds.rename(rename_map)
+            _LOG.info("Band harmonization applied: %s", rename_map)
         except Exception:
             _LOG.warning("Band renaming failed: %s", rename_map, exc_info=True)
 
@@ -278,6 +290,11 @@ def feature_layers(query, model):
     - has STAC-first feature loader with image enhancement for Landsat data.
     """
     dc = get_datacube(app_name='feature_layers')
+
+    if dc is None:
+        _LOG.info("Operating without Datacube instance - using STAC-only mode")
+    else:
+        _LOG.info("Operating with Datacube instance")
 
     # determine year from query
     year = None
@@ -379,15 +396,12 @@ def feature_layers(query, model):
             resampling='cubic'  # Use cubic resampling for better quality
         )
 
-    # Harmonize band names (Datacube-aware)
-    if dc is not None:
-        try:
-            ds = _harmonize_band_names(ds, dc, [product])
-            _LOG.info("Bands after harmonisation (with Datacube): %s", list(ds.data_vars))
-        except Exception as e:
-            _LOG.warning("Band harmonisation using Datacube failed: %s — falling back to raw names", e)
-    else:
-        _LOG.info("Datacube not available — skipping band harmonisation")
+    # Harmonize band names (works with or without Datacube)
+    try:
+        ds = _harmonize_band_names(ds, dc, [product])
+        _LOG.info("Bands after harmonisation: %s", list(ds.data_vars))
+    except Exception as e:
+        _LOG.warning("Band harmonisation failed: %s — falling back to raw names", e)
 
     # Ensure critical bands exist
     selected_bands = [b for b in _CANONICAL_BANDS if b in ds.data_vars]
