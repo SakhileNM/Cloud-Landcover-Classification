@@ -4,29 +4,17 @@ from streamlit_folium import st_folium
 import folium
 from inference import init_dask_cluster, predict_for_years
 import resource
-# Cloud compatibility fixes
 import os
-if os.getenv('RAILWAY_ENVIRONMENT'):
-    # Disable resource limits in cloud
-    try:
-        import resource
-        resource.setrlimit(resource.RLIMIT_AS, (1 * 1024**3, 1 * 1024**3))  # More conservative limit for cloud
-    except:
-        pass
-    
-    # Disable Dask cluster in cloud (memory constraints)
-    if 'dask_client' not in st.session_state:
-        st.session_state.dask_client = None
 
+# Set memory limits for Oracle Cloud (24GB available)
 try:
-    # Limit memory usage to 16GB
-    resource.setrlimit(resource.RLIMIT_AS, (16 * 1024**3, 16 * 1024**3))
+    resource.setrlimit(resource.RLIMIT_AS, (20 * 1024**3, 20 * 1024**3))  # 20GB limit
 except:
     pass
 
 # page config must be set before any other st.* call
 st.set_page_config(
-    page_title="Land-Cover Predictor",
+    page_title="Land-Cover Classification - Oracle Cloud",
     layout="wide",
     initial_sidebar_state="auto"
 )
@@ -39,20 +27,22 @@ if 'dask_client' not in st.session_state:
         st.warning(f"Could not start Dask cluster automatically: {e}")
 
 # --- UI ---
-st.title("Land-Cover Classification & Analysis")
+st.title("🌍 Land-Cover Classification & Analysis")
 st.markdown(
     """
     **Instructions:**  
     1. Click on the map to select a geographic location.  
     2. Choose one or more years (1995–2022).  
     3. Click **Run Predictions** to view classification maps and area summaries.
+    
+    *Deployed on Oracle Cloud with 4 OCPUs and 24GB RAM*
     """
 )
 
 st.subheader("1. Select a location on the map")
 
-# Create a Folium map
-folium_map = folium.Map(location=[-34.0, 20.0], zoom_start=6, tiles="OpenStreetMap")
+# Create a Folium map centered on South Africa
+folium_map = folium.Map(location=[-28.0, 24.0], zoom_start=5, tiles="OpenStreetMap")
 m = st_folium(folium_map, width=700, height=450)
 
 if m and m.get("last_clicked"):
@@ -65,13 +55,13 @@ else:
 
 st.subheader("2. Choose year(s) to process")
 all_years = list(range(1995, 2023))
-selected_years = st.multiselect("Select one or more years", all_years)
+selected_years = st.multiselect("Select one or more years", all_years, default=[2020, 2022])
 
 # Add PDF generation option
 generate_pdf = st.checkbox("Generate PDF Report", value=True, 
                           help="Create a comprehensive PDF report with all results and analysis")
 
-if st.button("Run Predictions"):
+if st.button("Run Predictions", type="primary"):
     if lat is None or not selected_years:
         st.error("Please select a location on the map *and* at least one year.")
     else:
@@ -82,15 +72,11 @@ if st.button("Run Predictions"):
             status_messages.append(msg)
             status_box.markdown("**Status:**<br>" + "<br>".join(status_messages), unsafe_allow_html=True)
 
-        with st.spinner("Running inference… this may take a minute"):
+        with st.spinner("Running inference… this may take a few minutes"):
             try:
-                # Import the PDF function safely
-                try:
-                    from inference import create_prediction_pdf, generate_analysis_text
-                    has_pdf_support = True
-                except ImportError as e:
-                    st.warning(f"PDF generation not available: {e}")
-                    has_pdf_support = False
+                # Import the PDF function
+                from inference import create_prediction_pdf, generate_analysis_text
+                has_pdf_support = True
                 
                 # Run predictions (existing functionality)
                 predictions, figures, areas_per_class, transition_matrices = predict_for_years(
@@ -107,7 +93,7 @@ if st.button("Run Predictions"):
                 st.session_state.selected_years = selected_years
                 
             except Exception as e:
-                st.error(f"An error occurred during prediction:\n{e}")
+                st.error(f"An error occurred during prediction:\n{str(e)}")
                 st.stop()
 
         st.subheader("Per-Year Results")
@@ -165,14 +151,7 @@ if st.button("Run Predictions"):
                     st.info("You can still view all results above in the interactive display.")
 
 st.markdown("---")
-st.markdown("ℹ️ Built with [Streamlit](https://streamlit.io) & [Open Data Cube](https://www.opendatacube.org)")
-
-# Health check endpoint for Railway
-if __name__ == "__main__":
-    # This allows Railway to health check the container
-    import requests
-    try:
-        response = requests.get("http://localhost:8501", timeout=5)
-        print(f"Health check: {response.status_code}")
-    except:
-        print("Health check: Starting up...")
+st.markdown("🚀 **Oracle Cloud Deployment**")
+st.markdown("💻 **Instance**: 4 OCPU, 24GB RAM")
+st.markdown("🌍 **Access**: http://129.151.164.27:8501")
+st.markdown("🔧 **Built with**: [Streamlit](https://streamlit.io) & [Open Data Cube](https://www.opendatacube.org)")
