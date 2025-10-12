@@ -132,7 +132,7 @@ def get_datacube(app_name="prediction", config=None):
 
         try:
             _dc = datacube.Datacube(app=app_name, config=config)
-            _LOG.info("Datacube initialized successfully with config: %s", config)
+            _LOG.info("Datacube initialised successfully with config: %s", config)
         except Exception as e:
             _LOG.warning("Datacube initialization failed (%s): %s", type(e).__name__, e)
             # Fallback to memory index if PostgreSQL fails
@@ -218,7 +218,7 @@ except Exception as e:
 training_data = "L_training_data(1).txt"
 
 
-# Initialize Datacube
+# Initialise Datacube
 dc = None
 
 import re
@@ -1437,8 +1437,11 @@ def generate_analysis_text(areas_per_class, transition_matrices, years, lat, lon
 
 def create_prediction_pdf(predictions, figures, areas_per_class, transition_matrices, lat, lon, years):
     """Create PDF report with all prediction details and plots"""
+
+    from datetime import datetime, timedelta, timezone
     
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    sa_time = datetime.now(timezone.utc) + timedelta(hours=2)
+    timestamp = sa_time.strftime("%Y%m%d_%H%M%S")
     pdf_filename = f"landcover_report_{timestamp}.pdf"
 
     if isinstance(years, int) or len(years) == 1:
@@ -1455,7 +1458,7 @@ def create_prediction_pdf(predictions, figures, areas_per_class, transition_matr
         title_text = [
             "LAND COVER PREDICTION REPORT",
             "",
-            f"Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"Generated on: {sa_time.strftime('%Y-%m-%d %H:%M:%S')} (SAST)",
             "",
             f"Location: Latitude {lat:.4f}, Longitude {lon:.4f}",
             f"Report Mode: {report_mode}",
@@ -1560,7 +1563,7 @@ def create_prediction_pdf(predictions, figures, areas_per_class, transition_matr
             "- Sentinel-2 (2017+)",
             "- Digital Earth Africa",
             "",
-            f"Report generated on: {datetime.datetime.now().strftime('%Y-%m-%d at %H:%M:%S')}"
+            f"Generated on: {sa_time.strftime('%Y-%m-%d %H:%M:%S')} (SAST)"
         ]
         
         plt.text(0.1, 0.9, "\n".join(summary_text), transform=plt.gca().transAxes, 
@@ -1570,7 +1573,6 @@ def create_prediction_pdf(predictions, figures, areas_per_class, transition_matr
     
     return pdf_filename
 
-# Add this function to your existing prediction workflow
 def predict_and_generate_pdf(lat, lon, years, model_type='Random Forest', status_callback=None):
     """Complete prediction workflow with PDF generation"""
     
