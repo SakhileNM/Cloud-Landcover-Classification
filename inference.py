@@ -194,18 +194,29 @@ def _map_query_keys_for_datacube(query):
             q.pop(k, None)
     return q
 
-# Load models and training data
-S_model_path = 'S_model(1).joblib'
-L_model_path = 'L_model(1).joblib'
-training_data = "L_training_data(1).txt"
+# Load models and training data - REPLACE THE OLD 2-MODEL LOADING WITH 4-MODEL LOADING
+# Model file paths
+L_model_rf_path = 'L_model_randomforest.joblib'
+S_model_rf_path = 'S_model_randomforest.joblib'
+L_model_gb_path = 'L_model_gradientboosting.joblib'
+S_model_gb_path = 'S_model_gradientboosting.joblib'
 
 try:
-    landsat_model = load(L_model_path).set_params(n_jobs=1)
-    sentinel_model = load(S_model_path).set_params(n_jobs=1)
+    # Load all four models
+    landsat_rf_model = load(L_model_rf_path).set_params(n_jobs=1)
+    sentinel_rf_model = load(S_model_rf_path).set_params(n_jobs=1)
+    landsat_gb_model = load(L_model_gb_path)
+    sentinel_gb_model = load(S_model_gb_path)
+    _LOG.info("Successfully loaded all 4 models (RF and GB for both sensors)")
 except Exception as e:
     logging.warning(f"Could not load models at import: {e}")
-    landsat_model = None
-    sentinel_model = None
+    landsat_rf_model = None
+    sentinel_rf_model = None
+    landsat_gb_model = None
+    sentinel_gb_model = None
+    
+training_data = "L_training_data(1).txt"
+
 
 # Initialize Datacube
 dc = None
@@ -297,15 +308,18 @@ def feature_layers(query, model):
         _LOG.info("Operating with Datacube instance")
 
     # determine year from query
-    year = None
+    year_from_query = None
     if "time" in query:
         t = query["time"]
         if isinstance(t, (str, int)) and len(str(t)) == 4:
-            year = int(t)
+            year_from_query = int(t)
         elif isinstance(t, (tuple, list)) and len(t) == 2:
-            year = int(str(t[0])[:4])
-    if year is None:
-        raise ValueError("Could not determine year from query.")
+            year_from_query = int(str(t[0])[:4])
+    
+    # Use provided year if available, otherwise use from query
+    year_int = year if year is not None else year_from_query
+    if year_int is None:
+        raise ValueError("Could not determine year from query or parameters.")
 
     product = get_geomad_product_for_year(year)
     if product is None:
@@ -411,7 +425,7 @@ def feature_layers(query, model):
     ds = ds[selected_bands]
 
     # compute spectral indices
-    satellite_mission = 's2' if model == sentinel_model else 'ls'
+    satellite_mission = 's2' if year_int >= 2017 else 'ls'
     da = calculate_indices(ds, index=['NDVI', 'LAI', 'MNDWI'], drop=False, satellite_mission=satellite_mission)
 
     # attach slope
@@ -722,17 +736,17 @@ def predict_large_data_chunked(model, data_xr):
     predicted = xr.merge([predicted, data_xr])
     return predicted
 
-
-def predict_for_location(lat, lon, year):
-    """Main prediction function."""
+def predict_for_location(lat, lon, year, model_type='Random Forest'):
+    """Main prediction function with model type selection."""
     try:
-        _LOG.info("predict_for_location called with lat=%r lon=%r year=%r", lat, lon, year)
+        _LOG.info(f"predict_for_location called with lat={lat} lon={lon} year={year} model_type={model_type}")
 
         if isinstance(lat, dict) and lon is None and year is None:
             d = lat
             lat = d.get('lat') or d.get('y') or d.get('latitude')
             lon = d.get('lon') or d.get('x') or d.get('longitude')
             year = d.get('year') or d.get('time')
+            model_type = d.get('model_type', 'Random Forest')  # Extract model_type if provided
 
         try:
             lat = float(lat)
@@ -746,9 +760,24 @@ def predict_for_location(lat, lon, year):
         except Exception:
             raise ValueError(f"Cannot parse year from {repr(year)}")
 
-        model = landsat_model if year_int < 2017 else sentinel_model
+        # CHOOSE MODEL BASED ON YEAR AND MODEL TYPE
+        if year_int < 2017:
+            if model_type == 'Random Forest':
+                model = landsat_rf_model
+                _LOG.info("Using Landsat Random Forest model")
+            else:  # Gradient Boosting
+                model = landsat_gb_model
+                _LOG.info("Using Landsat Gradient Boosting model")
+        else:
+            if model_type == 'Random Forest':
+                model = sentinel_rf_model
+                _LOG.info("Using Sentinel Random Forest model")
+            else:  # Gradient Boosting
+                model = sentinel_gb_model
+                _LOG.info("Using Sentinel Gradient Boosting model")
+                
         if model is None:
-            raise RuntimeError("Model(s) not loaded")
+            raise RuntimeError(f"Selected model ({model_type}) not loaded")
 
         query = {
             'x': (lon - buffer, lon + buffer),
@@ -757,7 +786,8 @@ def predict_for_location(lat, lon, year):
         }
         _LOG.info("predict_for_location: built datacube query: %s", query)
 
-        data = feature_layers(query, model)
+        # MODIFIED: Pass year_int instead of model to feature_layers for satellite mission determination
+        data = feature_layers(query, year_int)
         if data is None or len(data.data_vars) == 0:
             raise RuntimeError(f"No feature data for {lat},{lon},{year_str}")
 
@@ -1125,7 +1155,7 @@ def predict_for_years(lat, lon, years, status_callback=None):
         try:
             if status_callback:
                 status_callback(f"Predicting for year {year} ({idx+1}/{len(years)})...")
-            prediction = predict_for_location(lat, lon, year)
+            prediction = predict_for_location(lat, lon, year, model_type)
             predictions[year] = prediction
 
             # check prediction presence
@@ -1490,7 +1520,7 @@ def predict_and_generate_pdf(lat, lon, years, status_callback=None):
     
     # Run the existing prediction
     predictions, figures, areas_per_class, transition_matrices = predict_for_years(
-        lat, lon, years, status_callback
+        lat, lon, years, model_type, status_callback
     )
     
     # Generate PDF
