@@ -129,26 +129,30 @@ if st.button("Run Predictions", type="primary"):
                 # For area summary and transition matrix plots
                 st.pyplot(fig)
 
-        st.subheader("Numeric Area Table")
+        st.subheader("Class Distribution Table")
         import pandas as pd
         df_areas = pd.DataFrame(areas_per_class).T.fillna(0)
         
-        # Format the dataframe for better display
-        styled_df = df_areas.style.format("{:,.0f}").background_gradient(cmap='Blues')
+        # Format the dataframe for better display (two decimal places for percentages)
+        styled_df = df_areas.style.format("{:.2f}%").background_gradient(cmap='Blues')
         st.dataframe(styled_df)
         
         # Add summary statistics
-        st.subheader("Area Summary")
+        st.subheader("Distribution Summary")
         col1, col2, col3 = st.columns(3)
         with col1:
-            total_area = df_areas.sum().sum()
-            st.metric("Total Area Analyzed", f"{total_area:,.0f} m²")
+            # Total area now always sums to 100% for each year
+            avg_total = df_areas.sum(axis=1).mean()
+            st.metric("Mean Coverage Total", f"{avg_total:.1f}%")
+        
         with col2:
-            avg_area = df_areas.mean().mean()
-            st.metric("Average Class Area", f"{avg_area:,.0f} m²")
+            avg_class_share = df_areas.mean().mean()
+            st.metric("Average Class Share", f"{avg_class_share:.2f}%")
+        
         with col3:
             dominant_class = df_areas.iloc[-1].idxmax() if len(df_areas) > 0 else "N/A"
             st.metric("Current Dominant Class", dominant_class)
+
         
         # PDF Generation Section
         if generate_pdf and has_pdf_support:
