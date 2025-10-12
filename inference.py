@@ -291,7 +291,7 @@ def get_geomad_product_for_year(year):
     else:
         return None
 
-def feature_layers(query, model):
+def feature_layers(query, year_int):
     """
     STAC-first feature loader that:
     - picks GeoMAD product by year
@@ -300,6 +300,7 @@ def feature_layers(query, model):
     - returns a lazy xarray.Dataset chunked by dask_chunks
     - has STAC-first feature loader with image enhancement for Landsat data.
     """
+    
     dc = get_datacube(app_name='feature_layers')
 
     if dc is None:
@@ -307,23 +308,24 @@ def feature_layers(query, model):
     else:
         _LOG.info("Operating with Datacube instance")
 
-    # determine year from query
-    year_from_query = None
-    if "time" in query:
-        t = query["time"]
-        if isinstance(t, (str, int)) and len(str(t)) == 4:
-            year_from_query = int(t)
-        elif isinstance(t, (tuple, list)) and len(t) == 2:
-            year_from_query = int(str(t[0])[:4])
-    
-    # Use provided year if available, otherwise use from query
-    year_int = year if year is not None else year_from_query
+    # Use the provided year_int parameter
     if year_int is None:
-        raise ValueError("Could not determine year from query or parameters.")
+        # Fallback: determine year from query if not provided
+        year_from_query = None
+        if "time" in query:
+            t = query["time"]
+            if isinstance(t, (str, int)) and len(str(t)) == 4:
+                year_from_query = int(t)
+            elif isinstance(t, (tuple, list)) and len(t) == 2:
+                year_from_query = int(str(t[0])[:4])
+        
+        if year_from_query is None:
+            raise ValueError("Could not determine year from query or parameters.")
+        year_int = year_from_query
 
-    product = get_geomad_product_for_year(year)
+    product = get_geomad_product_for_year(year_int)
     if product is None:
-        raise ValueError(f"No GeoMAD product available for year {year}")
+        raise ValueError(f"No GeoMAD product available for year {year_int}")
 
     # build bbox and time arguments
     orig_query = dict(query or {})
