@@ -1103,7 +1103,7 @@ def plot_transition_matrix(matrix, class_labels, year_from, year_to):
     return fig
 
 
-def predict_for_years(lat, lon, years, status_callback=None):
+def predict_for_years(lat, lon, years, model_type='Random Forest', status_callback=None):
     """
     Main prediction function for Streamlit with robust handling of lazy arrays.
     Materializes only the small prediction arrays needed for plotting and counts.
@@ -1515,7 +1515,7 @@ def create_prediction_pdf(predictions, figures, areas_per_class, transition_matr
     return pdf_filename
 
 # Add this function to your existing prediction workflow
-def predict_and_generate_pdf(lat, lon, years, status_callback=None):
+def predict_and_generate_pdf(lat, lon, years, model_type='Random Forest', status_callback=None):
     """Complete prediction workflow with PDF generation"""
     
     # Run the existing prediction
