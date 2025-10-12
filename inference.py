@@ -1242,27 +1242,28 @@ def predict_for_years(lat, lon, years, model_type='Random Forest', status_callba
                 status_callback(f"Computing areas for year {year}...")
 
             # compute areas per class using numpy preds
-            area_per_pixel = 900 if year < 2017 else 400
             classes = pred_np.ravel()
-
+            
             # Filter out invalid predictions (values < 0)
             valid_mask = classes >= 0
             valid_classes = classes[valid_mask]
-
+            
             if len(valid_classes) == 0:
                 _LOG.warning("No valid predictions found for year %s", year)
-                areas_per_class[year] = {label: 0 for label in class_labels}
+                areas_per_class[year] = {label: 0.0 for label in class_labels}
             else:
-                # Use bincount for faster computation than np.unique
                 valid_classes_int = valid_classes.astype(int)
                 class_counts = np.bincount(valid_classes_int, minlength=len(class_labels))
-                
+                total_pixels = np.sum(class_counts)
+            
                 areas_per_class[year] = {}
                 for i, label in enumerate(class_labels):
                     if i < len(class_counts):
-                        areas_per_class[year][label] = int(class_counts[i]) * area_per_pixel
+                        # Calculate percentage cover per class
+                        areas_per_class[year][label] = (class_counts[i] / total_pixels) * 100.0
                     else:
-                        areas_per_class[year][label] = 0
+                        areas_per_class[year][label] = 0.0
+
 
             if status_callback:
                 status_callback(f"Area calculation completed for {year}")
@@ -1297,7 +1298,7 @@ def predict_for_years(lat, lon, years, model_type='Random Forest', status_callba
                 color=[class_colors[label] for label in class_labels])
     ax.set_title('Land Cover Area Over Time', fontsize=16, fontweight='bold')
     ax.set_xlabel('Year', fontsize=14)
-    ax.set_ylabel('Area (m²)', fontsize=14)
+    ax.set_ylabel('Area (%)', fontsize=14)
     ax.legend(title='Classes', bbox_to_anchor=(1.05, 1), fontsize=12)
     plt.tight_layout()
     figures.append(fig_area)
@@ -1312,7 +1313,7 @@ def predict_for_years(lat, lon, years, model_type='Random Forest', status_callba
             df_diff.plot(kind='bar', ax=ax, color=[class_colors[label] for label in class_labels])
             ax.set_title('Yearly Area Changes')
             ax.set_xlabel('Year')
-            ax.set_ylabel('Area Change (m²)')
+            ax.set_ylabel('Area Change (%)')
             ax.legend(title='Classes', bbox_to_anchor=(1.05, 1))
             plt.tight_layout()
             figures.append(fig_diff)
