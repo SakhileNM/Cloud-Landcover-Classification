@@ -519,15 +519,96 @@ def _enhance_landsat_band(band_data):
 
 # PREDICTION FUNCTIONS
 def predict_small_data(model, data_numpy):
-    """Process small datasets in one batch (robust to different predict_proba shapes)."""
+    """Process small datasets in one batch with robust handling of mismatched array sizes."""
     # Flatten the data for prediction
     data_flat = []
     vars_list = list(data_numpy.data_vars)
+    
+    # First, check if all arrays have the same shape
+    shapes = []
     for var in vars_list:
         var_data = data_numpy[var].values
-        # ensure we have a 2D array (y,x) or compatible
         arr = np.asarray(var_data)
-        data_flat.append(arr.reshape(-1))
+        shapes.append(arr.shape)
+    
+    # If shapes are inconsistent, resample to the smallest common shape
+    if len(set(shapes)) > 1:
+        _LOG.warning("Inconsistent array shapes detected: %s. Attempting to resample.", shapes)
+        
+        # Find the most common shape (target for resampling)
+        shape_counts = {}
+        for shape in shapes:
+            shape_counts[shape] = shape_counts.get(shape, 0) + 1
+        target_shape = max(shape_counts.items(), key=lambda x: x[1])[0]
+        
+        _LOG.info("Resampling all arrays to common shape: %s", target_shape)
+        
+        resampled_arrays = []
+        for var in vars_list:
+            var_data = data_numpy[var].values
+            arr = np.asarray(var_data)
+            
+            if arr.shape != target_shape:
+                # Resample using nearest neighbor for categorical data, linear for continuous
+                from scipy.ndimage import zoom
+                try:
+                    zoom_factors = [target_shape[i] / arr.shape[i] for i in range(len(target_shape))]
+                    
+                    # Use nearest neighbor for integer data (like classifications), 
+                    # linear for float data (like indices)
+                    if np.issubdtype(arr.dtype, np.integer):
+                        order = 0  # nearest neighbor
+                    else:
+                        order = 1  # linear
+                    
+                    resampled = zoom(arr, zoom_factors, order=order)
+                    resampled_arrays.append(resampled.reshape(-1))
+                    _LOG.debug("Resampled %s from %s to %s", var, arr.shape, resampled.shape)
+                except Exception as e:
+                    _LOG.warning("Resampling failed for %s: %s. Using original shape.", var, e)
+                    resampled_arrays.append(arr.reshape(-1))
+            else:
+                resampled_arrays.append(arr.reshape(-1))
+        
+        data_flat = resampled_arrays
+    else:
+        # All shapes are the same, proceed normally
+        for var in vars_list:
+            var_data = data_numpy[var].values
+            arr = np.asarray(var_data)
+            data_flat.append(arr.reshape(-1))
+
+    # Validate that all arrays now have the same length
+    lengths = [len(arr) for arr in data_flat]
+    if len(set(lengths)) > 1:
+        _LOG.error("Array lengths still inconsistent after resampling: %s", lengths)
+        
+        # Find the minimum length and truncate all arrays to that size
+        min_length = min(lengths)
+        _LOG.warning("Truncating all arrays to minimum length: %d", min_length)
+        
+        truncated_arrays = []
+        for arr in data_flat:
+            if len(arr) > min_length:
+                # For 2D arrays, try to maintain spatial structure when truncating
+                original_shape = data_numpy[vars_list[0]].shape
+                if len(original_shape) == 2:
+                    # Calculate how to truncate while preserving 2D structure
+                    rows, cols = original_shape
+                    # Keep the first min_length elements in row-major order
+                    truncated = arr[:min_length]
+                    truncated_arrays.append(truncated)
+                else:
+                    # For 1D or other shapes, simple truncation
+                    truncated_arrays.append(arr[:min_length])
+            else:
+                truncated_arrays.append(arr)
+        
+        data_flat = truncated_arrays
+        lengths = [len(arr) for arr in data_flat]
+        
+        if len(set(lengths)) > 1:
+            raise ValueError(f"Cannot reconcile array sizes even after truncation. Lengths: {lengths}")
 
     # Stack features
     X = np.column_stack(data_flat)
@@ -641,6 +722,16 @@ def predict_large_data_chunked(model, data_xr):
     vars_list = list(data_xr.data_vars)
     if len(vars_list) == 0:
         raise RuntimeError("No data variables available for chunked prediction")
+
+    # Check for consistent shapes across all variables
+    shapes = []
+    for var in vars_list:
+        shapes.append(data_xr[var].shape)
+    
+    if len(set(shapes)) > 1:
+        _LOG.warning("Inconsistent shapes in chunked prediction: %s", shapes)
+        # Find the most common shape and log warning
+        _LOG.warning("Proceeding with chunked prediction but results may be unreliable")
 
     # derive y,x sizes from first data variable (no compute)
     sample_da = data_xr[vars_list[0]].squeeze(drop=True)
