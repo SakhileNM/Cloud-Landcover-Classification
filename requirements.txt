@@ -14,6 +14,8 @@ authlib
 requests-oauthlib
 google-auth
 msal
+pyjwt
+bcrypt
 
 # Open Data Cube & geospatial
 datacube
