@@ -17,6 +17,7 @@ RUN apt update && \
     apt install -y --no-install-recommends \
       python3-full python3-dev python3-venv python3-pip \
       build-essential postgresql-client curl \
+      sqlite3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Create & activate venv
@@ -36,6 +37,9 @@ RUN pip install --upgrade pip && \
     pip install --no-cache-dir \
       -r /conf/requirements.txt \
       -c /conf/constraints.txt
+
+# Create directory for SQLite database
+RUN mkdir -p /opt/app/data && chmod 755 /opt/app/data
 
 COPY . .
 
