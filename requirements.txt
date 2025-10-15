@@ -1,21 +1,6 @@
 # Streamlit UI
 streamlit
 streamlit-folium
-streamlit-authenticator
-python-jose[cryptography]
-passlib[bcrypt]
-python-multipart
-python-dotenv
-sqlalchemy
-sqlite3
-pydantic
-email-validator
-authlib
-requests-oauthlib
-google-auth
-msal
-pyjwt
-bcrypt
 
 # Open Data Cube & geospatial
 datacube
