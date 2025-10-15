@@ -1,6 +1,10 @@
 # Streamlit UI
 streamlit
 streamlit-folium
+sqlalchemy
+pyjwt
+passlib[bcrypt]
+python-dotenv
 
 # Open Data Cube & geospatial
 datacube
