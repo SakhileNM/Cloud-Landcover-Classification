@@ -30,6 +30,7 @@ WORKDIR /opt/app
 
 # Copy requirements + constraints into /conf
 RUN mkdir -p /conf
+RUN mkdir -p /opt/app/data && chmod 777 /opt/app/data
 COPY requirements.txt constraints.txt /conf/
 
 # Install Python deps using the constraint
