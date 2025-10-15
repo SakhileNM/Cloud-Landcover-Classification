@@ -9,7 +9,7 @@ from passlib.context import CryptContext
 import jwt
 from datetime import datetime, timedelta
 import os
-from dotenv import load_dotload_dotenv
+from dotenv import load_dotenv
 
 load_dotenv()
 
