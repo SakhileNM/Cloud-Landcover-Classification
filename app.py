@@ -147,183 +147,175 @@ def main_application():
         """
     )
 
-    # Main application content based on analysis type
-    if analysis_type == "Single Location":
-        st.subheader("Single Location Analysis")
-        
-        st.write("Select a location on the map")
+    # Main application content
+    st.subheader("Single Location Analysis")
+    
+    st.write("Select a location on the map")
 
-        # Create a Folium map centered on South Africa
-        folium_map = folium.Map(location=[-28.0, 24.0], zoom_start=5, tiles="OpenStreetMap")
-        m = st_folium(folium_map, width=700, height=450)
+    # Create a Folium map centered on South Africa
+    folium_map = folium.Map(location=[-28.0, 24.0], zoom_start=5, tiles="OpenStreetMap")
+    m = st_folium(folium_map, width=700, height=450)
 
-        if m and m.get("last_clicked"):
-            lat = m["last_clicked"]["lat"]
-            lon = m["last_clicked"]["lng"]
-            st.write(f"**Selected coordinates:** {lat:.4f}, {lon:.4f}")
+    if m and m.get("last_clicked"):
+        lat = m["last_clicked"]["lat"]
+        lon = m["last_clicked"]["lng"]
+        st.write(f"**Selected coordinates:** {lat:.4f}, {lon:.4f}")
+    else:
+        lat = lon = None
+        st.info("Click on the map to choose a location.")
+
+    st.write("Choose year(s) to process")
+    all_years = list(range(1995, 2023))
+    selected_years = st.multiselect("Select one or more years", all_years, default=[2020, 2022], key="years_multiselect")
+
+    st.write("Select Machine Learning Model")
+    model_type = st.selectbox(
+        "Choose classification model:",
+        ["Random Forest", "Gradient Boosting"],
+        index=0,
+        help="Random Forest: Generally more robust and requires less tuning. Gradient Boosting: Can achieve higher accuracy but may be more sensitive to parameters.",
+        key="model_selectbox"
+    )
+
+    # Add PDF generation option
+    generate_pdf = st.checkbox("Generate PDF Report", value=True, 
+                            help="Create a comprehensive PDF report with all results and analysis",
+                            key="pdf_checkbox")
+
+    if st.button("Run Predictions", type="primary", key="run_predictions_btn"):
+        if lat is None or not selected_years:
+            st.error("Please select a location on the map and at least one year.")
         else:
-            lat = lon = None
-            st.info("Click on the map to choose a location.")
+            status_box = st.empty()
+            status_messages = []
 
-        st.write("Choose year(s) to process")
-        all_years = list(range(1995, 2023))
-        selected_years = st.multiselect("Select one or more years", all_years, default=[2020, 2022], key="years_multiselect")
+            def update_status(msg):
+                status_messages.append(msg)
+                status_box.markdown("**Status:**<br>" + "<br>".join(status_messages), unsafe_allow_html=True)
 
-        st.write("Select Machine Learning Model")
-        model_type = st.selectbox(
-            "Choose classification model:",
-            ["Random Forest", "Gradient Boosting"],
-            index=0,
-            help="Random Forest: Generally more robust and requires less tuning. Gradient Boosting: Can achieve higher accuracy but may be more sensitive to parameters.",
-            key="model_selectbox"
-        )
+            with st.spinner("Running inference... this may take a few minutes"):
+                try:
+                    update_status(f"Starting predictions using {model_type} model...")
+                    
+                    # Run predictions with model type selection
+                    predictions, figures, areas_per_class, transition_matrices = predict_for_years(
+                        lat, lon, selected_years, model_type, status_callback=update_status
+                    )
+                    
+                    # Update user analysis count
+                    user = st.session_state.user
+                    user['analysis_count'] = user.get('analysis_count', 0) + 1
+                    st.session_state.user = user
+                    
+                    # Store results for potential PDF generation
+                    st.session_state.predictions = predictions
+                    st.session_state.figures = figures
+                    st.session_state.areas_per_class = areas_per_class
+                    st.session_state.transition_matrices = transition_matrices
+                    st.session_state.lat = lat
+                    st.session_state.lon = lon
+                    st.session_state.selected_years = selected_years
+                    st.session_state.model_type = model_type
+                    
+                except Exception as e:
+                    st.error(f"An error occurred during prediction: {str(e)}")
+                    st.stop()
 
-        # Add PDF generation option
-        generate_pdf = st.checkbox("Generate PDF Report", value=True, 
-                                help="Create a comprehensive PDF report with all results and analysis",
-                                key="pdf_checkbox")
+            st.success(f"Predictions completed successfully using {model_type}!")
+            
+            # Display model information
+            st.info(f"""
+            **Model Information:**
+            - **Selected Model:** {model_type}
+            - **Years Processed:** {len(selected_years)} years ({min(selected_years)} to {max(selected_years)})
+            - **Sensors Used:** {'Landsat' if min(selected_years) < 2017 else 'Sentinel-2'} for older years, {'Sentinel-2' if max(selected_years) >= 2017 else 'Landsat'} for recent years
+            """)
 
-        if st.button("Run Predictions", type="primary", key="run_predictions_btn"):
-            if lat is None or not selected_years:
-                st.error("Please select a location on the map and at least one year.")
-            else:
-                status_box = st.empty()
-                status_messages = []
+            st.subheader("Per-Year Results")
+            for i, fig in enumerate(figures):
+                if i < len(selected_years):
+                    year = selected_years[i]
+                    st.write(f"### {year} Results")
+                    st.pyplot(fig)
+                else:
+                    st.pyplot(fig)
 
-                def update_status(msg):
-                    status_messages.append(msg)
-                    status_box.markdown("**Status:**<br>" + "<br>".join(status_messages), unsafe_allow_html=True)
+            st.subheader("Class Distribution Table")
+            import pandas as pd
+            df_areas = pd.DataFrame(areas_per_class).T.fillna(0)
+            
+            styled_df = df_areas.style.format("{:.2f}%").background_gradient(cmap='Blues')
+            st.dataframe(styled_df)
+            
+            st.subheader("Distribution Summary")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                avg_total = df_areas.sum(axis=1).mean()
+                st.metric("Mean Coverage Total", f"{avg_total:.1f}%")
+            
+            with col2:
+                avg_class_share = df_areas.mean().mean()
+                st.metric("Average Class Share", f"{avg_class_share:.2f}%")
+            
+            with col3:
+                dominant_class = df_areas.iloc[-1].idxmax() if len(df_areas) > 0 else "N/A"
+                st.metric("Current Dominant Class", dominant_class)
 
-                with st.spinner("Running inference... this may take a few minutes"):
+            # PDF Generation Section
+            if generate_pdf:
+                st.subheader("PDF Report Generation")
+                with st.spinner("Generating PDF report..."):
                     try:
-                        update_status(f"Starting predictions using {model_type} model...")
-                        
-                        # Run predictions with model type selection
-                        predictions, figures, areas_per_class, transition_matrices = predict_for_years(
-                            lat, lon, selected_years, model_type, status_callback=update_status
+                        pdf_path = create_prediction_pdf(
+                            predictions, 
+                            figures, 
+                            areas_per_class, 
+                            transition_matrices,
+                            lat, 
+                            lon, 
+                            selected_years
                         )
                         
-                        # Update user analysis count
-                        user = st.session_state.user
-                        user['analysis_count'] = user.get('analysis_count', 0) + 1
-                        st.session_state.user = user
-                        
-                        # Store results for potential PDF generation
-                        st.session_state.predictions = predictions
-                        st.session_state.figures = figures
-                        st.session_state.areas_per_class = areas_per_class
-                        st.session_state.transition_matrices = transition_matrices
-                        st.session_state.lat = lat
-                        st.session_state.lon = lon
-                        st.session_state.selected_years = selected_years
-                        st.session_state.model_type = model_type
-                        
-                    except Exception as e:
-                        st.error(f"An error occurred during prediction: {str(e)}")
-                        st.stop()
-
-                st.success(f"Predictions completed successfully using {model_type}!")
-                
-                # Display model information
-                st.info(f"""
-                **Model Information:**
-                - **Selected Model:** {model_type}
-                - **Years Processed:** {len(selected_years)} years ({min(selected_years)} to {max(selected_years)})
-                - **Sensors Used:** {'Landsat' if min(selected_years) < 2017 else 'Sentinel-2'} for older years, {'Sentinel-2' if max(selected_years) >= 2017 else 'Landsat'} for recent years
-                """)
-
-                st.subheader("Per-Year Results")
-                for i, fig in enumerate(figures):
-                    if i < len(selected_years):
-                        year = selected_years[i]
-                        st.write(f"### {year} Results")
-                        st.pyplot(fig)
-                    else:
-                        st.pyplot(fig)
-
-                st.subheader("Class Distribution Table")
-                import pandas as pd
-                df_areas = pd.DataFrame(areas_per_class).T.fillna(0)
-                
-                styled_df = df_areas.style.format("{:.2f}%").background_gradient(cmap='Blues')
-                st.dataframe(styled_df)
-                
-                st.subheader("Distribution Summary")
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    avg_total = df_areas.sum(axis=1).mean()
-                    st.metric("Mean Coverage Total", f"{avg_total:.1f}%")
-                
-                with col2:
-                    avg_class_share = df_areas.mean().mean()
-                    st.metric("Average Class Share", f"{avg_class_share:.2f}%")
-                
-                with col3:
-                    dominant_class = df_areas.iloc[-1].idxmax() if len(df_areas) > 0 else "N/A"
-                    st.metric("Current Dominant Class", dominant_class)
-
-                # PDF Generation Section
-                if generate_pdf:
-                    st.subheader("PDF Report Generation")
-                    with st.spinner("Generating PDF report..."):
-                        try:
-                            pdf_path = create_prediction_pdf(
-                                predictions, 
-                                figures, 
-                                areas_per_class, 
-                                transition_matrices,
-                                lat, 
-                                lon, 
-                                selected_years
-                            )
+                        if pdf_path and os.path.exists(pdf_path):
+                            # Check if user has Google Drive connected
+                            user = st.session_state.user
+                            file_name = f"landcover_analysis_{lat}_{lon}_{min(selected_years)}_{max(selected_years)}.pdf"
                             
-                            if pdf_path and os.path.exists(pdf_path):
-                                # Check if user has Google Drive connected
-                                user = st.session_state.user
-                                file_name = f"landcover_analysis_{lat}_{lon}_{min(selected_years)}_{max(selected_years)}.pdf"
-                                
-                                if user.get('drive_connected'):
-                                    # Future: Save to Google Drive
-                                    st.info("Google Drive integration coming soon - downloading locally for now")
-                                
-                                with open(pdf_path, "rb") as pdf_file:
-                                    st.download_button(
-                                        label="Download PDF Report",
-                                        data=pdf_file,
-                                        file_name=file_name,
-                                        mime="application/pdf",
-                                        help="Download comprehensive report with all analysis and plots",
-                                        key="download_pdf_btn"
-                                    )
-                                st.success("PDF report generated successfully!")
-                                
-                                # Show what's included in the PDF
-                                with st.expander("What's included in the PDF report?"):
-                                    st.markdown(f"""
-                                    - Cover page with prediction details
-                                    - Model information: {model_type}
-                                    - Automated analysis of land cover changes
-                                    - All classification maps for {len(selected_years)} years
-                                    - True color satellite imagery 
-                                    - Probability maps and confidence levels
-                                    - Area analysis and change detection
-                                    - Transition matrices between years
-                                    - Summary tables and statistics
-                                    """)
-                            else:
-                                st.error("PDF generation failed - file not created")
-                                
-                        except Exception as e:
-                            st.error(f"PDF generation failed: {str(e)}")
-                            st.info("You can still view all results above in the interactive display.")
-    
-    elif analysis_type == "Time Series":
-        st.subheader("Time Series Analysis")
-        st.info("Time Series Analysis feature is under development")
-        
-    elif analysis_type == "Batch Processing":
-        st.subheader("Batch Processing")
-        st.info("Batch Processing feature is under development")
+                            if user.get('drive_connected'):
+                                # Future: Save to Google Drive
+                                st.info("Google Drive integration coming soon - downloading locally for now")
+                            
+                            with open(pdf_path, "rb") as pdf_file:
+                                st.download_button(
+                                    label="Download PDF Report",
+                                    data=pdf_file,
+                                    file_name=file_name,
+                                    mime="application/pdf",
+                                    help="Download comprehensive report with all analysis and plots",
+                                    key="download_pdf_btn"
+                                )
+                            st.success("PDF report generated successfully!")
+                            
+                            # Show what's included in the PDF
+                            with st.expander("What's included in the PDF report?"):
+                                st.markdown(f"""
+                                - Cover page with prediction details
+                                - Model information: {model_type}
+                                - Automated analysis of land cover changes
+                                - All classification maps for {len(selected_years)} years
+                                - True color satellite imagery 
+                                - Probability maps and confidence levels
+                                - Area analysis and change detection
+                                - Transition matrices between years
+                                - Summary tables and statistics
+                                """)
+                        else:
+                            st.error("PDF generation failed - file not created")
+                            
+                    except Exception as e:
+                        st.error(f"PDF generation failed: {str(e)}")
+                        st.info("You can still view all results above in the interactive display.")
+
 
     st.markdown("---")
     st.markdown("**Oracle Cloud Deployment** | **Secure Authentication** | **Geospatial AI**")
