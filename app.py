@@ -1,4 +1,4 @@
-# app.py - FIXED VERSION
+# app.py - WITH WORKING PREFERENCES & EMAIL
 import streamlit as st
 from streamlit_folium import st_folium
 import folium
@@ -7,6 +7,9 @@ from auth0_auth import show_auth0_login, show_auth0_profile, handle_auth0_callba
 import resource
 import os
 from datetime import datetime
+import smtplib
+from email.mime.text import MimeText
+from email.mime.multipart import MimeMultipart
 
 # Set memory limits for Oracle Cloud (24GB available)
 try:
@@ -21,6 +24,59 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+class EmailService:
+    def __init__(self):
+        self.smtp_server = os.getenv("SMTP_SERVER", "smtp.gmail.com")
+        self.smtp_port = int(os.getenv("SMTP_PORT", 587))
+        self.smtp_username = os.getenv("SMTP_USERNAME")
+        self.smtp_password = os.getenv("SMTP_PASSWORD")
+        self.from_email = os.getenv("FROM_EMAIL", "noreply@geospatialplatform.com")
+    
+    def send_analysis_completion_email(self, user_email, user_name, analysis_details):
+        """Send email notification when analysis is completed"""
+        if not all([self.smtp_username, self.smtp_password]):
+            return False, "Email configuration not set up"
+        
+        try:
+            message = MimeMultipart("alternative")
+            message["Subject"] = "Analysis Completed - Geospatial Platform"
+            message["From"] = self.from_email
+            message["To"] = user_email
+            
+            html = f"""
+            <html>
+              <body>
+                <h2>Analysis Completed Successfully!</h2>
+                <p>Hello {user_name},</p>
+                <p>Your geospatial analysis has been completed successfully.</p>
+                
+                <h3>Analysis Details:</h3>
+                <ul>
+                  <li><strong>Location:</strong> {analysis_details.get('location', 'N/A')}</li>
+                  <li><strong>Years Analyzed:</strong> {analysis_details.get('years', 'N/A')}</li>
+                  <li><strong>Model Used:</strong> {analysis_details.get('model', 'N/A')}</li>
+                  <li><strong>Completion Time:</strong> {analysis_details.get('completion_time', 'N/A')}</li>
+                </ul>
+                
+                <p>You can view the results by logging into the platform.</p>
+                
+                <p>Best regards,<br>
+                Geospatial Classification Team</p>
+              </body>
+            </html>
+            """
+            
+            message.attach(MimeText(html, "html"))
+            
+            with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
+                server.starttls()
+                server.login(self.smtp_username, self.smtp_password)
+                server.send_message(message)
+            
+            return True, "Email sent successfully"
+        except Exception as e:
+            return False, f"Failed to send email: {str(e)}"
 
 # Custom CSS
 st.markdown("""
@@ -52,12 +108,15 @@ st.markdown("""
 def main_application():
     """Main application for authenticated users"""
     
-    # Initialize Dask cluster
+    # Initialize services
     if 'dask_client' not in st.session_state:
         try:
             st.session_state.dask_client = init_dask_cluster()
         except Exception as e:
             st.warning(f"Could not start Dask cluster: {e}")
+    
+    if 'email_service' not in st.session_state:
+        st.session_state.email_service = EmailService()
 
     # User welcome bar with three buttons
     if st.session_state.user:
@@ -68,6 +127,8 @@ def main_application():
             welcome_text = f"Welcome, {user['name']}! | Professional Geospatial Platform"
             if user.get('drive_connected'):
                 welcome_text += " <span class='status-badge'>Google Drive Connected</span>"
+            if user.get('email_notifications'):
+                welcome_text += " <span class='status-badge'>Email Notifications ON</span>"
             
             st.markdown(f'<div class="user-welcome">{welcome_text}</div>', unsafe_allow_html=True)
         
@@ -101,10 +162,16 @@ def main_application():
             st.write(f"**User:** {user['name']}")
             st.write(f"**Analyses:** {user.get('analysis_count', 0)} completed")
             
+            if user.get('email_notifications'):
+                st.success("Email Notifications: Enabled")
+            else:
+                st.info("Email Notifications: Disabled")
+            
             if user.get('drive_connected'):
                 st.success("Google Drive: Connected")
             else:
                 st.info("Google Drive: Available")
+            
         
         st.markdown("---")
         st.subheader("Machine Learning Models")
@@ -169,16 +236,21 @@ def main_application():
     selected_years = st.multiselect("Select one or more years", all_years, default=[2020, 2022], key="years_multiselect")
 
     st.write("Select Machine Learning Model")
+    # Use user's default model preference
+    user_default_model = st.session_state.user.get('default_model', 'Random Forest')
+    default_index = 0 if user_default_model == "Random Forest" else 1
+    
     model_type = st.selectbox(
         "Choose classification model:",
         ["Random Forest", "Gradient Boosting"],
-        index=0,
+        index=default_index,
         help="Random Forest: Generally more robust and requires less tuning. Gradient Boosting: Can achieve higher accuracy but may be more sensitive to parameters.",
         key="model_selectbox"
     )
 
-    # Add PDF generation option
-    generate_pdf = st.checkbox("Generate PDF Report", value=True, 
+    # Add PDF generation option - use user's auto_save preference
+    user_auto_save = st.session_state.user.get('auto_save', True)
+    generate_pdf = st.checkbox("Generate PDF Report", value=user_auto_save, 
                             help="Create a comprehensive PDF report with all results and analysis",
                             key="pdf_checkbox")
 
@@ -207,6 +279,25 @@ def main_application():
                     user['analysis_count'] = user.get('analysis_count', 0) + 1
                     st.session_state.user = user
                     
+                    # Send email notification if enabled
+                    if user.get('email_notifications'):
+                        update_status("Sending email notification...")
+                        analysis_details = {
+                            'location': f"Lat: {lat:.4f}, Lon: {lon:.4f}",
+                            'years': f"{min(selected_years)} to {max(selected_years)}",
+                            'model': model_type,
+                            'completion_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                        }
+                        
+                        success, message = st.session_state.email_service.send_analysis_completion_email(
+                            user['email'], user['name'], analysis_details
+                        )
+                        
+                        if success:
+                            update_status("Email notification sent successfully")
+                        else:
+                            update_status(f"Email notification failed: {message}")
+                    
                     # Store results for potential PDF generation
                     st.session_state.predictions = predictions
                     st.session_state.figures = figures
@@ -229,6 +320,7 @@ def main_application():
             - **Selected Model:** {model_type}
             - **Years Processed:** {len(selected_years)} years ({min(selected_years)} to {max(selected_years)})
             - **Sensors Used:** {'Landsat' if min(selected_years) < 2017 else 'Sentinel-2'} for older years, {'Sentinel-2' if max(selected_years) >= 2017 else 'Landsat'} for recent years
+            - **Total Analyses:** {user.get('analysis_count', 0)} completed
             """)
 
             st.subheader("Per-Year Results")
@@ -315,7 +407,6 @@ def main_application():
                     except Exception as e:
                         st.error(f"PDF generation failed: {str(e)}")
                         st.info("You can still view all results above in the interactive display.")
-
 
     st.markdown("---")
     st.markdown("**Oracle Cloud Deployment** | **Secure Authentication** | **Geospatial AI**")
