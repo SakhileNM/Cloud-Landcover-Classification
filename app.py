@@ -1,14 +1,13 @@
-# app.py - WITH CLOUD PROFILES
+# app.py - WITH AUTH0 + GOOGLE DRIVE READY
 import streamlit as st
 from streamlit_folium import st_folium
 import folium
 from inference import init_dask_cluster, predict_for_years, create_prediction_pdf
-from cloud_auth import show_cloud_login, show_cloud_profile
-from cloud_storage import cloud_storage
+from auth0_auth import show_auth0_login, show_auth0_profile, handle_auth0_callback
 import resource
 import os
 
-# Set memory limits
+# Set memory limits for Oracle Cloud (24GB available)
 try:
     resource.setrlimit(resource.RLIMIT_AS, (20 * 1024**3, 20 * 1024**3))
 except:
@@ -38,13 +37,21 @@ st.markdown("""
         border-radius: 0.5rem;
         margin-bottom: 1rem;
     }
-    .cloud-badge {
+    .status-badge {
         background: #4CAF50;
         color: white;
         padding: 0.3rem 0.8rem;
         border-radius: 15px;
         font-size: 0.8rem;
         margin-left: 0.5rem;
+    }
+    .login-container {
+        max-width: 400px;
+        margin: 0 auto;
+        padding: 2rem;
+        border: 1px solid #ddd;
+        border-radius: 10px;
+        background: white;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -64,44 +71,43 @@ def main_application():
         col1, col2, col3 = st.columns([3, 1, 1])
         with col1:
             user = st.session_state.user
-            storage_info = cloud_storage.get_user_storage_info(user)
             
-            welcome_text = f"""
-            Welcome, **{user.full_name}**! | 
-            {user.theme.title()} Theme | 
-            {storage_info['service'].replace('_', ' ').title()} Storage
-            """
-            if storage_info['connected']:
-                welcome_text += " <span class='cloud-badge'>Connected</span>"
+            welcome_text = f"Welcome, {user['name']}! | Professional Geospatial Platform"
+            if user.get('drive_connected'):
+                welcome_text += " <span class='status-badge'>Google Drive Connected</span>"
             
             st.markdown(f'<div class="user-welcome">{welcome_text}</div>', unsafe_allow_html=True)
         
         with col2:
-            if st.button("Profile"):
+            if st.button("Profile Settings"):
                 st.session_state.show_profile = True
                 st.rerun()
         with col3:
             if st.button("Logout"):
-                for key in ['authenticated', 'user', 'user_token', 'show_profile']:
+                for key in ['authenticated', 'user', 'access_token', 'show_profile']:
                     if key in st.session_state:
                         del st.session_state[key]
                 st.rerun()
 
     # Show profile if requested
     if st.session_state.get('show_profile', False):
-        show_cloud_profile()
+        show_auth0_profile()
         return
 
     # Sidebar
     with st.sidebar:
         st.title("Navigation")
         
-        # Show cloud storage info
+        # Show user info
         if st.session_state.user:
-            storage_info = cloud_storage.get_user_storage_info(st.session_state.user)
-            st.info(f"**Storage:** {storage_info['service'].replace('_', ' ').title()}")
-            if storage_info['connected']:
-                st.success(f"{storage_info['total_space']}")
+            user = st.session_state.user
+            st.write(f"**User:** {user['name']}")
+            st.write(f"**Email:** {user['email']}")
+            
+            if user.get('drive_connected'):
+                st.success("Google Drive: Connected")
+            else:
+                st.info("Google Drive: Available Soon")
             
         st.markdown("---")
         
@@ -113,7 +119,7 @@ def main_application():
         )
         
         st.markdown("---")
-        st.subheader("About the Models")
+        st.subheader("Machine Learning Models")
         st.markdown("""
         **Random Forest**
         - Ensemble of decision trees
@@ -124,80 +130,207 @@ def main_application():
         - Often higher accuracy
         
         **Sensor Selection**
-        - **Landsat**: 1995-2016 (30m)
-        - **Sentinel-2**: 2017+ (10-20m)
+        - **Landsat**: 1995-2016 (30m resolution)
+        - **Sentinel-2**: 2017+ (10-20m resolution)
         """)
         
         st.markdown("---")
-        st.subheader("Cloud Platform")
+        st.subheader("Platform Features")
         st.markdown("""
-        - 👤 User profiles
-        - ☁️ Cloud storage
-        - 🎨 Custom themes
-        - 📊 Analysis history
-        - 🚀 Oracle Cloud
+        - User profiles and authentication
+        - Cloud storage integration
+        - Custom theme settings
+        - Analysis history tracking
+        - Oracle Cloud deployment
         """)
 
     # Main content
-    st.markdown('<div class="main-header">☁️ Cloud Geospatial Platform</div>', unsafe_allow_html=True)
+    st.markdown('<div class="main-header">Geospatial Landcover Classification Platform</div>', unsafe_allow_html=True)
     
     st.markdown(
         """
         **Instructions:**  
-        1. Click on the map to select a location  
-        2. Choose years to analyze (1995–2022)  
-        3. Select ML model  
-        4. Run predictions and save to your cloud storage
+        1. Click on the map to select a geographic location  
+        2. Choose one or more years (1995-2022)  
+        3. Select a machine learning model  
+        4. Click Run Predictions to view classification maps and area summaries
         
-        *Results automatically saved to your configured cloud storage*
+        *Deployed on Oracle Cloud with 4 OCPUs and 24GB RAM*
         """
     )
 
-    # Analysis interface (your existing code)
+    # Main application content based on analysis type
     if analysis_type == "Single Location":
-        # ... your existing map and prediction code ...
+        st.subheader("Single Location Analysis")
         
-        # MODIFIED: After generating PDF, save to cloud
-        if generate_pdf and st.session_state.user:
-            with st.spinner("Generating PDF report..."):
-                try:
-                    pdf_path = create_prediction_pdf(
-                        predictions, figures, areas_per_class, 
-                        transition_matrices, lat, lon, selected_years
-                    )
-                    
-                    if pdf_path and os.path.exists(pdf_path):
-                        # Save to user's cloud storage
-                        user = st.session_state.user
-                        file_name = f"landcover_analysis_{lat}_{lon}_{min(selected_years)}_{max(selected_years)}.pdf"
+        st.write("Select a location on the map")
+
+        # Create a Folium map centered on South Africa
+        folium_map = folium.Map(location=[-28.0, 24.0], zoom_start=5, tiles="OpenStreetMap")
+        m = st_folium(folium_map, width=700, height=450)
+
+        if m and m.get("last_clicked"):
+            lat = m["last_clicked"]["lat"]
+            lon = m["last_clicked"]["lng"]
+            st.write(f"**Selected coordinates:** {lat:.4f}, {lon:.4f}")
+        else:
+            lat = lon = None
+            st.info("Click on the map to choose a location.")
+
+        st.write("Choose year(s) to process")
+        all_years = list(range(1995, 2023))
+        selected_years = st.multiselect("Select one or more years", all_years, default=[2020, 2022])
+
+        st.write("Select Machine Learning Model")
+        model_type = st.selectbox(
+            "Choose classification model:",
+            ["Random Forest", "Gradient Boosting"],
+            index=0,
+            help="Random Forest: Generally more robust and requires less tuning. Gradient Boosting: Can achieve higher accuracy but may be more sensitive to parameters."
+        )
+
+        # Add PDF generation option
+        generate_pdf = st.checkbox("Generate PDF Report", value=True, 
+                                help="Create a comprehensive PDF report with all results and analysis")
+
+        if st.button("Run Predictions", type="primary"):
+            if lat is None or not selected_years:
+                st.error("Please select a location on the map and at least one year.")
+            else:
+                status_box = st.empty()
+                status_messages = []
+
+                def update_status(msg):
+                    status_messages.append(msg)
+                    status_box.markdown("**Status:**<br>" + "<br>".join(status_messages), unsafe_allow_html=True)
+
+                with st.spinner("Running inference... this may take a few minutes"):
+                    try:
+                        update_status(f"Starting predictions using {model_type} model...")
                         
-                        success, message = cloud_storage.save_to_cloud(user, pdf_path, file_name)
+                        # Run predictions with model type selection
+                        predictions, figures, areas_per_class, transition_matrices = predict_for_years(
+                            lat, lon, selected_years, model_type, status_callback=update_status
+                        )
                         
-                        if success:
-                            st.success(f"{message}")
-                            
-                            with open(pdf_path, "rb") as pdf_file:
-                                st.download_button(
-                                    label="📥 Download Local Copy",
-                                    data=pdf_file,
-                                    file_name=file_name,
-                                    mime="application/pdf"
-                                )
-                        else:
-                            st.warning(f"Cloud save failed: {message}")
-                            # Fallback to local download
-                            with open(pdf_path, "rb") as pdf_file:
-                                st.download_button(
-                                    label="Download PDF Report",
-                                    data=pdf_file,
-                                    file_name=file_name,
-                                    mime="application/pdf"
-                                )
+                        # Store results for potential PDF generation
+                        st.session_state.predictions = predictions
+                        st.session_state.figures = figures
+                        st.session_state.areas_per_class = areas_per_class
+                        st.session_state.transition_matrices = transition_matrices
+                        st.session_state.lat = lat
+                        st.session_state.lon = lon
+                        st.session_state.selected_years = selected_years
+                        st.session_state.model_type = model_type
+                        
+                    except Exception as e:
+                        st.error(f"An error occurred during prediction: {str(e)}")
+                        st.stop()
+
+                st.success(f"Predictions completed successfully using {model_type}!")
+                
+                # Display model information
+                st.info(f"""
+                **Model Information:**
+                - **Selected Model:** {model_type}
+                - **Years Processed:** {len(selected_years)} years ({min(selected_years)} to {max(selected_years)})
+                - **Sensors Used:** {'Landsat' if min(selected_years) < 2017 else 'Sentinel-2'} for older years, {'Sentinel-2' if max(selected_years) >= 2017 else 'Landsat'} for recent years
+                """)
+
+                st.subheader("Per-Year Results")
+                for i, fig in enumerate(figures):
+                    if i < len(selected_years):
+                        year = selected_years[i]
+                        st.write(f"### {year} Results")
+                        st.pyplot(fig)
                     else:
-                        st.error("PDF generation failed")
-                        
-                except Exception as e:
-                    st.error(f"PDF generation failed: {str(e)}")
+                        st.pyplot(fig)
+
+                st.subheader("Class Distribution Table")
+                import pandas as pd
+                df_areas = pd.DataFrame(areas_per_class).T.fillna(0)
+                
+                styled_df = df_areas.style.format("{:.2f}%").background_gradient(cmap='Blues')
+                st.dataframe(styled_df)
+                
+                st.subheader("Distribution Summary")
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    avg_total = df_areas.sum(axis=1).mean()
+                    st.metric("Mean Coverage Total", f"{avg_total:.1f}%")
+                
+                with col2:
+                    avg_class_share = df_areas.mean().mean()
+                    st.metric("Average Class Share", f"{avg_class_share:.2f}%")
+                
+                with col3:
+                    dominant_class = df_areas.iloc[-1].idxmax() if len(df_areas) > 0 else "N/A"
+                    st.metric("Current Dominant Class", dominant_class)
+
+                # PDF Generation Section
+                if generate_pdf:
+                    st.subheader("PDF Report Generation")
+                    with st.spinner("Generating PDF report..."):
+                        try:
+                            pdf_path = create_prediction_pdf(
+                                predictions, 
+                                figures, 
+                                areas_per_class, 
+                                transition_matrices,
+                                lat, 
+                                lon, 
+                                selected_years
+                            )
+                            
+                            if pdf_path and os.path.exists(pdf_path):
+                                # Check if user has Google Drive connected
+                                user = st.session_state.user
+                                file_name = f"landcover_analysis_{lat}_{lon}_{min(selected_years)}_{max(selected_years)}.pdf"
+                                
+                                if user.get('drive_connected'):
+                                    # Future: Save to Google Drive
+                                    st.info("Google Drive integration coming soon - downloading locally for now")
+                                
+                                with open(pdf_path, "rb") as pdf_file:
+                                    st.download_button(
+                                        label="Download PDF Report",
+                                        data=pdf_file,
+                                        file_name=file_name,
+                                        mime="application/pdf",
+                                        help="Download comprehensive report with all analysis and plots"
+                                    )
+                                st.success("PDF report generated successfully!")
+                                
+                                # Show what's included in the PDF
+                                with st.expander("What's included in the PDF report?"):
+                                    st.markdown(f"""
+                                    - Cover page with prediction details
+                                    - Model information: {model_type}
+                                    - Automated analysis of land cover changes
+                                    - All classification maps for {len(selected_years)} years
+                                    - True color satellite imagery 
+                                    - Probability maps and confidence levels
+                                    - Area analysis and change detection
+                                    - Transition matrices between years
+                                    - Summary tables and statistics
+                                    """)
+                            else:
+                                st.error("PDF generation failed - file not created")
+                                
+                        except Exception as e:
+                            st.error(f"PDF generation failed: {str(e)}")
+                            st.info("You can still view all results above in the interactive display.")
+    
+    elif analysis_type == "Time Series":
+        st.subheader("Time Series Analysis")
+        st.info("Time Series Analysis feature is under development")
+        
+    elif analysis_type == "Batch Processing":
+        st.subheader("Batch Processing")
+        st.info("Batch Processing feature is under development")
+
+    st.markdown("---")
+    st.markdown("**Oracle Cloud Deployment** | **Secure Authentication** | **Geospatial AI**")
 
 def main():
     # Initialize session state
@@ -208,13 +341,17 @@ def main():
     if 'show_profile' not in st.session_state:
         st.session_state.show_profile = False
 
+    # Handle Auth0 callback
+    handle_auth0_callback()
+
     # Check authentication
     if not st.session_state.authenticated:
-        st.markdown('<div class="main-header">☁️ Cloud Geospatial Platform</div>', unsafe_allow_html=True)
-        show_cloud_login()
+        st.markdown('<div class="main-header">Geospatial Landcover Classification Platform</div>', unsafe_allow_html=True)
+        show_auth0_login()
         st.markdown("---")
-        st.markdown("🚀 **Oracle Cloud** | ☁️ **Cloud Storage** | 🌍 **Geospatial AI**")
+        st.markdown("**Oracle Cloud** | **Secure Authentication** | **Geospatial AI**")
     else:
+        # User is authenticated, show main application
         main_application()
 
 if __name__ == "__main__":
