@@ -155,7 +155,11 @@ def handle_auth0_callback():
                     'auth0_data': user_info,
                     'access_token': tokens.get('access_token'),
                     'refresh_token': tokens.get('refresh_token'),
-                    'drive_connected': False
+                    'drive_connected': False,
+                    'theme': 'light',
+                    'save_location': 'local',
+                    'analysis_count': 0,
+                    'member_since': datetime.now().strftime('%Y-%m-%d')
                 }
                 st.session_state.authenticated = True
                 
@@ -169,30 +173,7 @@ def show_auth0_profile():
     
     st.title("User Profile")
     
-    # Navigation buttons at the top
-    col1, col2, col3 = st.columns([1, 1, 1])
-    with col1:
-        if st.button("Home", key="profile_home_btn"):
-            st.session_state.show_profile = False
-            st.rerun()
-    with col2:
-        if st.button("Profile Settings", key="profile_settings_btn", disabled=True):
-            pass  # Already on profile page
-    with col3:
-        if st.button("Logout", key="profile_logout_btn"):
-            auth0_domain = os.getenv("AUTH0_DOMAIN")
-            client_id = os.getenv("AUTH0_CLIENT_ID")
-            return_to = "http://earthgo.work.gd:8501"
-            
-            logout_url = f"https://{auth0_domain}/v2/logout?client_id={client_id}&returnTo={return_to}"
-            st.markdown(f'[Click here to logout completely]({logout_url})')
-            
-            for key in ['authenticated', 'user', 'access_token']:
-                if key in st.session_state:
-                    del st.session_state[key]
-            st.rerun()
-    
-    st.markdown("---")
+    # Removed duplicate buttons - only show profile content
     
     col1, col2 = st.columns([1, 2])
     
@@ -200,56 +181,104 @@ def show_auth0_profile():
         st.subheader("Profile Information")
         st.write(f"**Name:** {user['name']}")
         st.write(f"**Email:** {user['email']}")
-        st.write(f"**User ID:** {user['id']}")
+        st.write(f"**Member Since:** {user.get('member_since', 'Recent')}")
+        st.write(f"**Analyses Completed:** {user.get('analysis_count', 0)}")
         
-        # Cloud storage status
-        st.subheader("Cloud Storage")
-        if user.get('drive_connected'):
-            st.success("Google Drive: Connected")
-        else:
-            st.info("Google Drive: Not Connected")
+        # User statistics
+        st.subheader("Usage Statistics")
+        st.write(f"**Account Type:** {'Premium' if user.get('analysis_count', 0) > 10 else 'Standard'}")
+        st.write(f"**Storage Used:** {user.get('storage_used', '0 MB')}")
+        st.write(f"**Last Login:** {datetime.now().strftime('%Y-%m-%d %H:%M')}")
         
         if user.get('picture'):
-            st.image(user['picture'], width=100)
+            st.image(user['picture'], width=120)
     
     with col2:
-        st.subheader("Application Settings")
+        st.subheader("Personal Settings")
         
-        with st.form("user_settings_form", key="user_settings_form"):
+        # Personal preferences form
+        with st.form("user_preferences_form"):
+            st.write("**Interface Preferences**")
             theme = st.selectbox(
-                "Interface Theme",
+                "Theme",
                 ["light", "dark", "auto"],
-                index=0,
-                key="theme_select"
+                index=["light", "dark", "auto"].index(user.get('theme', 'light'))
             )
             
-            save_location = st.radio(
-                "Save results to:",
-                ["local", "google_drive"],
-                format_func=lambda x: {
-                    "local": "Local Storage",
-                    "google_drive": "Google Drive"
-                }[x],
-                index=0,
-                key="save_location_radio"
+            st.write("**Analysis Preferences**")
+            default_model = st.selectbox(
+                "Default Model",
+                ["Random Forest", "Gradient Boosting"],
+                index=0
             )
             
-            if st.form_submit_button("Save Settings", key="save_settings_btn"):
-                st.success("Settings saved successfully!")
+            auto_save = st.checkbox(
+                "Auto-save results",
+                value=user.get('auto_save', True)
+            )
+            
+            email_notifications = st.checkbox(
+                "Email notifications for completed analyses",
+                value=user.get('email_notifications', False)
+            )
+            
+            if st.form_submit_button("Save Preferences"):
+                # Update user preferences
+                user['theme'] = theme
+                user['default_model'] = default_model
+                user['auto_save'] = auto_save
+                user['email_notifications'] = email_notifications
+                st.session_state.user = user
+                st.success("Preferences saved successfully!")
+        
+        st.subheader("Data Management")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Export My Data", key="export_data_btn"):
+                st.info("Data export feature coming soon")
+        
+        with col2:
+            if st.button("Clear History", key="clear_history_btn"):
+                st.info("History clearing feature coming soon")
     
     st.markdown("---")
     
-    # Google Drive integration section
-    st.subheader("Google Drive Integration")
-    st.info("""
-    **Google Drive Integration - Coming Soon**
+    # Cloud storage integration section
+    st.subheader("Cloud Storage Integration")
     
-    Future features will include:
-    - Save PDF reports directly to your Google Drive
-    - Access your analysis history from any device  
-    - Automatic backups of your results
-    - Share results with team members
-    """)
+    if user.get('drive_connected'):
+        st.success("Google Drive is connected to your account")
+        st.write("**Connected Features:**")
+        st.write("- Automatic backup of analysis results")
+        st.write("- Access your files from any device")
+        st.write("- Share results with collaborators")
+        
+        if st.button("Disconnect Google Drive", key="disconnect_drive_btn"):
+            user['drive_connected'] = False
+            st.session_state.user = user
+            st.success("Google Drive has been disconnected")
+            st.rerun()
+    else:
+        st.info("Connect Google Drive to enable cloud storage features")
+        
+        if st.button("Connect Google Drive", key="connect_drive_btn"):
+            # For future implementation - would trigger OAuth with drive scope
+            st.info("Google Drive integration will be available soon")
     
-    if st.button("Notify Me When Available", key="notify_drive_btn"):
-        st.success("We will notify you when Google Drive integration is ready!")
+    st.markdown("---")
+    
+    # Account actions
+    st.subheader("Account Actions")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Download Account Data", key="download_account_btn"):
+            st.info("Account data download coming soon")
+    
+    with col2:
+        if st.button("Delete Account", key="delete_account_btn"):
+            st.warning("This action cannot be undone. All your data will be permanently deleted.")
+            confirm = st.checkbox("I understand and want to delete my account")
+            if confirm and st.button("Confirm Account Deletion", key="confirm_delete_btn"):
+                st.error("Account deletion feature coming soon")
