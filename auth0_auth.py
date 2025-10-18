@@ -8,13 +8,13 @@ from dotenv import load_dotenv
 import sqlite3
 from contextlib import contextmanager
 import hashlib
+from google_drive_integration import GoogleDriveService, setup_google_drive_credentials
 
 load_dotenv()
 
 @contextmanager
 def get_db_connection():
     """Context manager for database connections"""
-    # Ensure data directory exists
     os.makedirs('/app/data', exist_ok=True)
     
     conn = sqlite3.connect('/app/data/user_preferences.db', check_same_thread=False)
@@ -30,7 +30,11 @@ class Auth0Service:
         self.client_id = os.getenv("AUTH0_CLIENT_ID")
         self.client_secret = os.getenv("AUTH0_CLIENT_SECRET")
         self.redirect_uri = os.getenv("AUTH0_REDIRECT_URI", "http://localhost:8501")
+        self.google_drive_service = GoogleDriveService()
         self.init_database()
+        
+        # Setup Google Drive credentials
+        setup_google_drive_credentials()
 
     def init_database(self):
         """Initialize SQLite database for user preferences and history"""
@@ -44,6 +48,7 @@ class Auth0Service:
                     auto_save BOOLEAN DEFAULT 1,
                     email_notifications BOOLEAN DEFAULT 0,
                     save_location TEXT DEFAULT 'local',
+                    drive_connected BOOLEAN DEFAULT 0,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -60,19 +65,8 @@ class Auth0Service:
                     years TEXT,
                     model_used TEXT,
                     results_data TEXT,
+                    drive_file_id TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (user_id) REFERENCES user_preferences (user_id)
-                )
-            ''')
-            
-            # User session table for persistence
-            conn.execute('''
-                CREATE TABLE IF NOT EXISTS user_sessions (
-                    session_id TEXT PRIMARY KEY,
-                    user_id TEXT NOT NULL,
-                    session_data TEXT,
-                    last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    expires_at TIMESTAMP,
                     FOREIGN KEY (user_id) REFERENCES user_preferences (user_id)
                 )
             ''')
@@ -82,9 +76,6 @@ class Auth0Service:
     def get_auth_url(self, include_drive_scope=False):
         """Generate Auth0 authorization URL"""
         scope = "openid profile email"
-        if include_drive_scope:
-            scope += " https://www.googleapis.com/auth/drive.file"
-        
         return (f"https://{self.domain}/authorize?"
                 f"response_type=code&"
                 f"client_id={self.client_id}&"
@@ -128,7 +119,7 @@ class Auth0Service:
         try:
             with get_db_connection() as conn:
                 cursor = conn.execute(
-                    '''SELECT theme, default_model, auto_save, email_notifications, save_location 
+                    '''SELECT theme, default_model, auto_save, email_notifications, save_location, drive_connected 
                        FROM user_preferences WHERE user_id = ?''',
                     (user_id,)
                 )
@@ -139,7 +130,8 @@ class Auth0Service:
                         'default_model': result[1],
                         'auto_save': bool(result[2]),
                         'email_notifications': bool(result[3]),
-                        'save_location': result[4]
+                        'save_location': result[4],
+                        'drive_connected': bool(result[5])
                     }
         except Exception as e:
             st.error(f"Error loading preferences: {e}")
@@ -151,15 +143,16 @@ class Auth0Service:
             with get_db_connection() as conn:
                 conn.execute('''
                     INSERT OR REPLACE INTO user_preferences 
-                    (user_id, theme, default_model, auto_save, email_notifications, save_location, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    (user_id, theme, default_model, auto_save, email_notifications, save_location, drive_connected, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ''', (
                     user_id,
                     preferences.get('theme', 'light'),
                     preferences.get('default_model', 'Random Forest'),
                     int(preferences.get('auto_save', True)),
                     int(preferences.get('email_notifications', False)),
-                    preferences.get('save_location', 'local')
+                    preferences.get('save_location', 'local'),
+                    int(preferences.get('drive_connected', False))
                 ))
                 conn.commit()
                 return True
@@ -173,8 +166,8 @@ class Auth0Service:
             with get_db_connection() as conn:
                 conn.execute('''
                     INSERT INTO user_analysis_history 
-                    (user_id, analysis_type, location_lat, location_lon, years, model_used, results_data)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (user_id, analysis_type, location_lat, location_lon, years, model_used, results_data, drive_file_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     user_id,
                     analysis_data.get('analysis_type', 'landcover'),
@@ -182,7 +175,8 @@ class Auth0Service:
                     analysis_data.get('lon'),
                     json.dumps(analysis_data.get('years', [])),
                     analysis_data.get('model_type'),
-                    json.dumps(analysis_data.get('results', {}))
+                    json.dumps(analysis_data.get('results', {})),
+                    analysis_data.get('drive_file_id', '')
                 ))
                 conn.commit()
                 return True
@@ -208,44 +202,6 @@ class Auth0Service:
         except Exception as e:
             st.error(f"Error loading analysis history: {e}")
             return []
-
-    def save_user_session(self, user_id, session_data):
-        """Save user session data"""
-        try:
-            session_id = hashlib.md5(f"{user_id}{datetime.now()}".encode()).hexdigest()
-            expires_at = datetime.now() + timedelta(days=7)
-            
-            with get_db_connection() as conn:
-                conn.execute('''
-                    INSERT OR REPLACE INTO user_sessions 
-                    (session_id, user_id, session_data, expires_at)
-                    VALUES (?, ?, ?, ?)
-                ''', (
-                    session_id,
-                    user_id,
-                    json.dumps(session_data),
-                    expires_at
-                ))
-                conn.commit()
-            return session_id
-        except Exception as e:
-            st.error(f"Error saving session: {e}")
-            return None
-
-    def load_user_session(self, session_id):
-        """Load user session data"""
-        try:
-            with get_db_connection() as conn:
-                cursor = conn.execute(
-                    'SELECT session_data FROM user_sessions WHERE session_id = ? AND expires_at > CURRENT_TIMESTAMP',
-                    (session_id,)
-                )
-                result = cursor.fetchone()
-                if result:
-                    return json.loads(result[0])
-        except Exception as e:
-            st.error(f"Error loading session: {e}")
-        return None
 
 def show_auth0_login():
     if 'auth0_service' not in st.session_state:
@@ -280,9 +236,16 @@ def show_auth0_login():
 
 def handle_auth0_callback():
     """Handle Auth0 callback after login"""
+    # First handle Google Drive OAuth callback if present
+    if 'google_drive_service' not in st.session_state:
+        st.session_state.google_drive_service = GoogleDriveService()
+    
+    st.session_state.google_drive_service.handle_oauth_callback()
+    
+    # Then handle Auth0 callback
     query_params = st.query_params
     
-    if 'code' in query_params:
+    if 'code' in query_params and 'google_oauth_state' not in st.session_state:
         code = query_params['code']
         
         if 'auth0_service' not in st.session_state:
@@ -308,9 +271,14 @@ def handle_auth0_callback():
                         'default_model': 'Random Forest',
                         'auto_save': True,
                         'email_notifications': False,
-                        'save_location': 'local'
+                        'save_location': 'local',
+                        'drive_connected': False
                     }
                     auth_service.save_user_preferences(user_id, preferences)
+                
+                # Check if Google Drive is connected
+                drive_connected = os.path.exists(f'/app/data/credentials/{user_id}_google_drive_token.json')
+                preferences['drive_connected'] = drive_connected
                 
                 # Store user in session
                 st.session_state.user = {
@@ -321,7 +289,6 @@ def handle_auth0_callback():
                     'auth0_data': user_info,
                     'access_token': tokens.get('access_token'),
                     'refresh_token': tokens.get('refresh_token'),
-                    'drive_connected': False,
                     'member_since': datetime.now().strftime('%Y-%m-%d'),
                     # Load preferences into session
                     **preferences
@@ -334,14 +301,6 @@ def handle_auth0_callback():
                 
                 st.session_state.authenticated = True
                 
-                # Save session to database for persistence
-                session_data = {
-                    'user': st.session_state.user,
-                    'authenticated': True,
-                    'last_login': datetime.now().isoformat()
-                }
-                auth_service.save_user_session(user_id, session_data)
-                
                 st.success(f"Welcome {user_info.get('name', user_info['email'])}!")
                 st.query_params.clear()
                 st.rerun()
@@ -349,6 +308,7 @@ def handle_auth0_callback():
 def show_auth0_profile():
     user = st.session_state.user
     auth_service = st.session_state.auth0_service
+    drive_service = st.session_state.google_drive_service
     
     st.title("User Profile & Settings")
     
@@ -410,7 +370,8 @@ def show_auth0_profile():
                     'default_model': default_model,
                     'auto_save': auto_save,
                     'email_notifications': email_notifications,
-                    'save_location': save_location
+                    'save_location': save_location,
+                    'drive_connected': user.get('drive_connected', False)
                 }
                 
                 # Save to database
@@ -430,13 +391,53 @@ def show_auth0_profile():
         st.subheader("Recent Analysis History")
         history = user.get('analysis_history', [])
         if history:
-            for analysis in history[:5]:  # Show last 5 analyses
+            for analysis in history[:5]:
                 with st.expander(f"Analysis {analysis['id']} - {analysis['created_at']}"):
                     st.write(f"**Model:** {analysis.get('model_used', 'N/A')}")
                     st.write(f"**Years:** {analysis.get('years', 'N/A')}")
                     st.write(f"**Location:** {analysis.get('location_lat', 'N/A')}, {analysis.get('location_lon', 'N/A')}")
+                    if analysis.get('drive_file_id'):
+                        st.write("Saved to Google Drive")
         else:
             st.info("No analysis history yet.")
+    
+    st.markdown("---")
+    
+    # Google Drive Integration Section
+    st.subheader("Google Drive Integration")
+    
+    if user.get('drive_connected'):
+        st.success("Google Drive is connected to your account")
+        
+        # Show recent files
+        st.write("**Recent Files in Google Drive:**")
+        files = drive_service.list_user_files(user['id'])
+        if files:
+            for file in files:
+                st.write(f"- [{file['name']}]({file['webViewLink']}) ({file['createdTime'][:10]})")
+        else:
+            st.info("No files found in Google Drive")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Refresh File List", key="refresh_drive_btn"):
+                st.rerun()
+        
+        with col2:
+            if st.button("Disconnect Google Drive", key="disconnect_drive_btn"):
+                if drive_service.disconnect_drive(user['id']):
+                    user['drive_connected'] = False
+                    st.session_state.user = user
+                    auth_service.save_user_preferences(user['id'], user)
+                    st.rerun()
+    else:
+        st.info("Connect Google Drive to automatically save your analysis reports and access them from anywhere.")
+        
+        if st.button("Connect Google Drive", key="connect_drive_btn"):
+            if drive_service.authenticate(user['id']):
+                st.success("Google Drive authentication initiated!")
+            else:
+                st.info("Please complete the Google authentication in the new window.")
     
     st.markdown("---")
     
@@ -446,7 +447,6 @@ def show_auth0_profile():
     
     with col1:
         if st.button("Export My Data", key="export_data_btn"):
-            # Export user data functionality
             st.info("Data export feature coming soon")
     
     with col2:
