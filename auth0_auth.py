@@ -1,4 +1,4 @@
-# auth0_auth.py - FIXED VERSION
+# auth0_auth.py - FIXED PREFERENCES
 import streamlit as st
 import requests
 import jwt
@@ -6,6 +6,8 @@ import json
 from datetime import datetime, timedelta
 import os
 from dotenv import load_dotenv
+import sqlite3
+from contextlib import contextmanager
 
 load_dotenv()
 
@@ -15,52 +17,66 @@ class Auth0Service:
         self.client_id = os.getenv("AUTH0_CLIENT_ID")
         self.client_secret = os.getenv("AUTH0_CLIENT_SECRET")
         self.redirect_uri = os.getenv("AUTH0_REDIRECT_URI", "http://earthgo.work.gd:8501")
-    
-    def get_auth_url(self, include_drive_scope=False):
-        """Generate Auth0 authorization URL"""
-        scope = "openid profile email"
-        if include_drive_scope:
-            scope += " https://www.googleapis.com/auth/drive.file"
-        
-        return (
-            f"https://{self.domain}/authorize?"
-            f"response_type=code&"
-            f"client_id={self.client_id}&"
-            f"redirect_uri={self.redirect_uri}&"
-            f"scope={scope}&"
-            f"audience=https://{self.domain}/api/v2/"
-        )
-    
-    def get_token(self, code):
-        """Exchange authorization code for tokens"""
-        url = f"https://{self.domain}/oauth/token"
-        headers = {"content-type": "application/x-www-form-urlencoded"}
-        data = {
-            "grant_type": "authorization_code",
-            "client_id": self.client_id,
-            "client_secret": self.client_secret,
-            "code": code,
-            "redirect_uri": self.redirect_uri
-        }
-        
-        response = requests.post(url, headers=headers, data=data)
-        if response.status_code == 200:
-            return response.json()
-        else:
-            st.error(f"Token exchange failed: {response.text}")
-            return None
-    
-    def get_user_info(self, access_token):
-        """Get user profile information"""
-        url = f"https://{self.domain}/userinfo"
-        headers = {"authorization": f"Bearer {access_token}"}
-        
-        response = requests.get(url, headers=headers)
-        if response.status_code == 200:
-            return response.json()
-        else:
-            st.error(f"User info failed: {response.text}")
-            return None
+        self.init_database()
+
+    def init_database(self):
+        """Initialize SQLite database for user preferences"""
+        with sqlite3.connect('/opt/app/data/user_preferences.db') as conn:
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS user_preferences (
+                    user_id TEXT PRIMARY KEY,
+                    theme TEXT DEFAULT 'light',
+                    default_model TEXT DEFAULT 'Random Forest',
+                    auto_save BOOLEAN DEFAULT 1,
+                    email_notifications BOOLEAN DEFAULT 0,
+                    save_location TEXT DEFAULT 'local',
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            conn.commit()
+
+    def get_user_preferences(self, user_id):
+        """Get user preferences from database"""
+        try:
+            with sqlite3.connect('/opt/app/data/user_preferences.db') as conn:
+                cursor = conn.execute(
+                    'SELECT theme, default_model, auto_save, email_notifications, save_location FROM user_preferences WHERE user_id = ?',
+                    (user_id,)
+                )
+                result = cursor.fetchone()
+                if result:
+                    return {
+                        'theme': result[0],
+                        'default_model': result[1],
+                        'auto_save': bool(result[2]),
+                        'email_notifications': bool(result[3]),
+                        'save_location': result[4]
+                    }
+        except Exception as e:
+            st.error(f"Error loading preferences: {e}")
+        return None
+
+    def save_user_preferences(self, user_id, preferences):
+        """Save user preferences to database"""
+        try:
+            with sqlite3.connect('/opt/app/data/user_preferences.db') as conn:
+                conn.execute('''
+                    INSERT OR REPLACE INTO user_preferences 
+                    (user_id, theme, default_model, auto_save, email_notifications, save_location, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ''', (
+                    user_id,
+                    preferences.get('theme', 'light'),
+                    preferences.get('default_model', 'Random Forest'),
+                    int(preferences.get('auto_save', True)),
+                    int(preferences.get('email_notifications', False)),
+                    preferences.get('save_location', 'local')
+                ))
+                conn.commit()
+                return True
+        except Exception as e:
+            st.error(f"Error saving preferences: {e}")
+            return False
 
 def show_auth0_login():
     if 'auth0_service' not in st.session_state:
@@ -78,9 +94,10 @@ def show_auth0_login():
         box-shadow: 0 2px 10px rgba(0,0,0,0.1);
     }
     .google-button {
-        background-color: #4285F4;
-        color: white;
-        border: none;
+        background-color: white;
+        color: #4285F4;
+        border: 1px solid #4285F4;
+        border-radius: 10px;
         padding: 12px 24px;
         border-radius: 4px;
         cursor: pointer;
@@ -132,7 +149,6 @@ def show_auth0_login():
 
 def handle_auth0_callback():
     """Handle Auth0 callback after login"""
-    # Use new st.query_params instead of experimental_get_query_params
     query_params = st.query_params
     
     if 'code' in query_params:
@@ -146,9 +162,13 @@ def handle_auth0_callback():
             user_info = auth_service.get_user_info(tokens['access_token'])
             
             if user_info:
+                # Load user preferences from database
+                user_id = user_info['sub']
+                preferences = auth_service.get_user_preferences(user_id) or {}
+                
                 # Store user in session
                 st.session_state.user = {
-                    'id': user_info['sub'],
+                    'id': user_id,
                     'email': user_info['email'],
                     'name': user_info.get('name', user_info['email']),
                     'picture': user_info.get('picture', ''),
@@ -156,24 +176,26 @@ def handle_auth0_callback():
                     'access_token': tokens.get('access_token'),
                     'refresh_token': tokens.get('refresh_token'),
                     'drive_connected': False,
-                    'theme': 'light',
-                    'save_location': 'local',
                     'analysis_count': 0,
-                    'member_since': datetime.now().strftime('%Y-%m-%d')
+                    'member_since': datetime.now().strftime('%Y-%m-%d'),
+                    # Load preferences into session
+                    'theme': preferences.get('theme', 'light'),
+                    'default_model': preferences.get('default_model', 'Random Forest'),
+                    'auto_save': preferences.get('auto_save', True),
+                    'email_notifications': preferences.get('email_notifications', False),
+                    'save_location': preferences.get('save_location', 'local')
                 }
                 st.session_state.authenticated = True
                 
                 st.success(f"Welcome {user_info.get('name', user_info['email'])}!")
-                # Clear query parameters using new API
                 st.query_params.clear()
                 st.rerun()
 
 def show_auth0_profile():
     user = st.session_state.user
+    auth_service = st.session_state.auth0_service
     
     st.title("User Profile")
-    
-    # Removed duplicate buttons - only show profile content
     
     col1, col2 = st.columns([1, 2])
     
@@ -197,7 +219,7 @@ def show_auth0_profile():
         st.subheader("Personal Settings")
         
         # Personal preferences form
-        with st.form("user_preferences_form"):
+        with st.form(key="user_preferences_form"):
             st.write("**Interface Preferences**")
             theme = st.selectbox(
                 "Theme",
@@ -209,7 +231,7 @@ def show_auth0_profile():
             default_model = st.selectbox(
                 "Default Model",
                 ["Random Forest", "Gradient Boosting"],
-                index=0
+                index=0 if user.get('default_model', 'Random Forest') == "Random Forest" else 1
             )
             
             auto_save = st.checkbox(
@@ -219,17 +241,44 @@ def show_auth0_profile():
             
             email_notifications = st.checkbox(
                 "Email notifications for completed analyses",
-                value=user.get('email_notifications', False)
+                value=user.get('email_notifications', False),
+                help="You will receive email notifications when analyses are completed"
             )
             
-            if st.form_submit_button("Save Preferences"):
-                # Update user preferences
-                user['theme'] = theme
-                user['default_model'] = default_model
-                user['auto_save'] = auto_save
-                user['email_notifications'] = email_notifications
-                st.session_state.user = user
-                st.success("Preferences saved successfully!")
+            save_location = st.radio(
+                "Default save location",
+                ["local", "google_drive"],
+                index=0 if user.get('save_location', 'local') == "local" else 1,
+                format_func=lambda x: "Local Storage" if x == "local" else "Google Drive (Coming Soon)"
+            )
+            
+            submitted = st.form_submit_button("Save Preferences")
+            if submitted:
+                # Update user preferences in database and session
+                new_preferences = {
+                    'theme': theme,
+                    'default_model': default_model,
+                    'auto_save': auto_save,
+                    'email_notifications': email_notifications,
+                    'save_location': save_location
+                }
+                
+                # Save to database
+                success = auth_service.save_user_preferences(user['id'], new_preferences)
+                
+                if success:
+                    # Update session state
+                    for key, value in new_preferences.items():
+                        user[key] = value
+                    st.session_state.user = user
+                    
+                    st.success("Preferences saved successfully!")
+                    
+                    # Show what was saved
+                    with st.expander("View Saved Preferences"):
+                        st.json(new_preferences)
+                else:
+                    st.error("Failed to save preferences")
         
         st.subheader("Data Management")
         
@@ -241,6 +290,20 @@ def show_auth0_profile():
         with col2:
             if st.button("Clear History", key="clear_history_btn"):
                 st.info("History clearing feature coming soon")
+    
+    st.markdown("---")
+    
+    # Email notifications status
+    st.subheader("Notification Settings")
+    if user.get('email_notifications'):
+        st.success("Email notifications are ENABLED")
+        st.write("You will receive email notifications for:")
+        st.write("- Completed analyses")
+        st.write("- System updates")
+        st.write("- Important announcements")
+    else:
+        st.info("Email notifications are DISABLED")
+        st.write("Enable email notifications to stay updated on your analyses")
     
     st.markdown("---")
     
@@ -263,7 +326,6 @@ def show_auth0_profile():
         st.info("Connect Google Drive to enable cloud storage features")
         
         if st.button("Connect Google Drive", key="connect_drive_btn"):
-            # For future implementation - would trigger OAuth with drive scope
             st.info("Google Drive integration will be available soon")
     
     st.markdown("---")
