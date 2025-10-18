@@ -1,4 +1,4 @@
-# app.py - WITH AUTH0 + GOOGLE DRIVE READY
+# app.py - FIXED VERSION
 import streamlit as st
 from streamlit_folium import st_folium
 import folium
@@ -45,14 +45,6 @@ st.markdown("""
         font-size: 0.8rem;
         margin-left: 0.5rem;
     }
-    .login-container {
-        max-width: 400px;
-        margin: 0 auto;
-        padding: 2rem;
-        border: 1px solid #ddd;
-        border-radius: 10px;
-        background: white;
-    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -66,9 +58,9 @@ def main_application():
         except Exception as e:
             st.warning(f"Could not start Dask cluster: {e}")
 
-    # User welcome bar
+    # User welcome bar with three buttons
     if st.session_state.user:
-        col1, col2, col3 = st.columns([3, 1, 1])
+        col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
         with col1:
             user = st.session_state.user
             
@@ -79,11 +71,15 @@ def main_application():
             st.markdown(f'<div class="user-welcome">{welcome_text}</div>', unsafe_allow_html=True)
         
         with col2:
-            if st.button("Profile Settings"):
-                st.session_state.show_profile = True
+            if st.button("Home", key="home_btn_main"):
+                st.session_state.show_profile = False
                 st.rerun()
         with col3:
-            if st.button("Logout"):
+            if st.button("Profile Settings", key="profile_btn_main"):
+                st.session_state.show_profile = True
+                st.rerun()
+        with col4:
+            if st.button("Logout", key="logout_btn_main"):
                 for key in ['authenticated', 'user', 'access_token', 'show_profile']:
                     if key in st.session_state:
                         del st.session_state[key]
@@ -115,7 +111,8 @@ def main_application():
         st.subheader("Analysis")
         analysis_type = st.radio(
             "Select Analysis Type:",
-            ["Single Location", "Time Series", "Batch Processing"]
+            ["Single Location", "Time Series", "Batch Processing"],
+            key="analysis_type_radio"
         )
         
         st.markdown("---")
@@ -179,21 +176,23 @@ def main_application():
 
         st.write("Choose year(s) to process")
         all_years = list(range(1995, 2023))
-        selected_years = st.multiselect("Select one or more years", all_years, default=[2020, 2022])
+        selected_years = st.multiselect("Select one or more years", all_years, default=[2020, 2022], key="years_multiselect")
 
         st.write("Select Machine Learning Model")
         model_type = st.selectbox(
             "Choose classification model:",
             ["Random Forest", "Gradient Boosting"],
             index=0,
-            help="Random Forest: Generally more robust and requires less tuning. Gradient Boosting: Can achieve higher accuracy but may be more sensitive to parameters."
+            help="Random Forest: Generally more robust and requires less tuning. Gradient Boosting: Can achieve higher accuracy but may be more sensitive to parameters.",
+            key="model_selectbox"
         )
 
         # Add PDF generation option
         generate_pdf = st.checkbox("Generate PDF Report", value=True, 
-                                help="Create a comprehensive PDF report with all results and analysis")
+                                help="Create a comprehensive PDF report with all results and analysis",
+                                key="pdf_checkbox")
 
-        if st.button("Run Predictions", type="primary"):
+        if st.button("Run Predictions", type="primary", key="run_predictions_btn"):
             if lat is None or not selected_years:
                 st.error("Please select a location on the map and at least one year.")
             else:
@@ -297,7 +296,8 @@ def main_application():
                                         data=pdf_file,
                                         file_name=file_name,
                                         mime="application/pdf",
-                                        help="Download comprehensive report with all analysis and plots"
+                                        help="Download comprehensive report with all analysis and plots",
+                                        key="download_pdf_btn"
                                     )
                                 st.success("PDF report generated successfully!")
                                 
