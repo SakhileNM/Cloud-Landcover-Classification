@@ -6,6 +6,7 @@ from inference import init_dask_cluster, predict_for_years, create_prediction_pd
 from auth0_auth import show_auth0_login, show_auth0_profile, handle_auth0_callback
 import resource
 import os
+from datetime import datetime
 
 # Set memory limits for Oracle Cloud (24GB available)
 try:
@@ -98,22 +99,12 @@ def main_application():
         if st.session_state.user:
             user = st.session_state.user
             st.write(f"**User:** {user['name']}")
-            st.write(f"**Email:** {user['email']}")
+            st.write(f"**Analyses:** {user.get('analysis_count', 0)} completed")
             
             if user.get('drive_connected'):
                 st.success("Google Drive: Connected")
             else:
-                st.info("Google Drive: Available Soon")
-            
-        st.markdown("---")
-        
-        # Main navigation
-        st.subheader("Analysis")
-        analysis_type = st.radio(
-            "Select Analysis Type:",
-            ["Single Location", "Time Series", "Batch Processing"],
-            key="analysis_type_radio"
-        )
+                st.info("Google Drive: Available")
         
         st.markdown("---")
         st.subheader("Machine Learning Models")
@@ -211,6 +202,11 @@ def main_application():
                         predictions, figures, areas_per_class, transition_matrices = predict_for_years(
                             lat, lon, selected_years, model_type, status_callback=update_status
                         )
+                        
+                        # Update user analysis count
+                        user = st.session_state.user
+                        user['analysis_count'] = user.get('analysis_count', 0) + 1
+                        st.session_state.user = user
                         
                         # Store results for potential PDF generation
                         st.session_state.predictions = predictions
