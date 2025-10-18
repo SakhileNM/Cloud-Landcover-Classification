@@ -425,23 +425,19 @@ def main_application():
                             # Check if Google Drive is connected
                             if st.session_state.user.get('drive_connected'):
                                 # Save to Google Drive
-                                from google_drive_integration import GoogleDriveService
+                                from google_drive import GoogleDriveService
                                 drive_service = GoogleDriveService()
                                 
-                                drive_url = drive_service.upload_file_to_drive(
-                                    pdf_path, 
-                                    file_name, 
-                                    st.session_state.user['id']
-                                )
+                                drive_url = drive_service.upload_file(pdf_path, file_name)
                                 
                                 if drive_url:
                                     st.success(f"PDF report saved to Google Drive!")
-                                    st.markdown(f"[📎 View in Google Drive]({drive_url})")
+                                    st.markdown(f"[View in Google Drive]({drive_url})")
                                     
                                     # Also provide local download
                                     with open(pdf_path, "rb") as pdf_file:
                                         st.download_button(
-                                            label="📥 Download Local Copy",
+                                            label="Download Local Copy",
                                             data=pdf_file,
                                             file_name=file_name,
                                             mime="application/pdf",
