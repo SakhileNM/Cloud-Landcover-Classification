@@ -1,4 +1,3 @@
-# app.py - WITH WORKING PREFERENCES & EMAIL
 import streamlit as st
 from streamlit_folium import st_folium
 import folium
@@ -8,10 +7,10 @@ import resource
 import os
 from datetime import datetime
 import smtplib
-from email.mime.text import MimeText
-from email.mime.multipart import MimeMultipart
+from email.mime.text import MIMEText  # Fixed import
+from email.mime.multipart import MIMEMultipart  # Fixed import
 
-# Set memory limits for Oracle Cloud (24GB available)
+# Set memory limits
 try:
     resource.setrlimit(resource.RLIMIT_AS, (20 * 1024**3, 20 * 1024**3))
 except:
@@ -39,7 +38,7 @@ class EmailService:
             return False, "Email configuration not set up"
         
         try:
-            message = MimeMultipart("alternative")
+            message = MIMEMultipart("alternative")  # Fixed class name
             message["Subject"] = "Analysis Completed - Geospatial Platform"
             message["From"] = self.from_email
             message["To"] = user_email
@@ -67,7 +66,7 @@ class EmailService:
             </html>
             """
             
-            message.attach(MimeText(html, "html"))
+            message.attach(MIMEText(html, "html"))  # Fixed class name
             
             with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
                 server.starttls()
@@ -200,14 +199,14 @@ def main_application():
             
             # Show user preferences status
             if user.get('email_notifications'):
-                st.success("Email Notifications: Enabled")
+                st.success("📧 Email Notifications: Enabled")
             else:
-                st.info("Email Notifications: Disabled")
+                st.info("📧 Email Notifications: Disabled")
             
             if user.get('drive_connected'):
-                st.success("Google Drive: Connected")
+                st.success("☁️ Google Drive: Connected")
             else:
-                st.info("Google Drive: Available")
+                st.info("☁️ Google Drive: Available")
             
             # Quick settings toggle
             with st.expander("Quick Settings"):
@@ -372,13 +371,13 @@ def main_application():
             - **Selected Model:** {model_type}
             - **Years Processed:** {len(selected_years)} years ({min(selected_years)} to {max(selected_years)})
             - **Sensors Used:** {'Landsat' if min(selected_years) < 2017 else 'Sentinel-2'} for older years, {'Sentinel-2' if max(selected_years) >= 2017 else 'Landsat'} for recent years
-            - **Total Analyses:** {user.get('analysis_count', 0)} completed
+            - **Total Analyses:** {st.session_state.user.get('analysis_count', 0)} completed
             """)
 
             st.subheader("Per-Year Results")
-            for i, fig in enumerate(figures):
-                if i < len(selected_years):
-                    year = selected_years[i]
+            for i, fig in enumerate(st.session_state.figures):
+                if i < len(st.session_state.selected_years):
+                    year = st.session_state.selected_years[i]
                     st.write(f"### {year} Results")
                     st.pyplot(fig)
                 else:
@@ -386,7 +385,7 @@ def main_application():
 
             st.subheader("Class Distribution Table")
             import pandas as pd
-            df_areas = pd.DataFrame(areas_per_class).T.fillna(0)
+            df_areas = pd.DataFrame(st.session_state.areas_per_class).T.fillna(0)
             
             styled_df = df_areas.style.format("{:.2f}%").background_gradient(cmap='Blues')
             st.dataframe(styled_df)
@@ -405,40 +404,70 @@ def main_application():
                 dominant_class = df_areas.iloc[-1].idxmax() if len(df_areas) > 0 else "N/A"
                 st.metric("Current Dominant Class", dominant_class)
 
-            # PDF Generation Section
+            # PDF Generation Section with Google Drive integration
             if generate_pdf:
                 st.subheader("PDF Report Generation")
                 with st.spinner("Generating PDF report..."):
                     try:
                         pdf_path = create_prediction_pdf(
-                            predictions, 
-                            figures, 
-                            areas_per_class, 
-                            transition_matrices,
-                            lat, 
-                            lon, 
-                            selected_years
+                            st.session_state.predictions, 
+                            st.session_state.figures, 
+                            st.session_state.areas_per_class, 
+                            st.session_state.transition_matrices,
+                            st.session_state.lat, 
+                            st.session_state.lon, 
+                            st.session_state.selected_years
                         )
                         
                         if pdf_path and os.path.exists(pdf_path):
-                            # Check if user has Google Drive connected
-                            user = st.session_state.user
-                            file_name = f"landcover_analysis_{lat}_{lon}_{min(selected_years)}_{max(selected_years)}.pdf"
+                            file_name = f"landcover_analysis_{st.session_state.lat}_{st.session_state.lon}_{min(st.session_state.selected_years)}_{max(st.session_state.selected_years)}.pdf"
                             
-                            if user.get('drive_connected'):
-                                # Future: Save to Google Drive
-                                st.info("Google Drive integration coming soon - downloading locally for now")
-                            
-                            with open(pdf_path, "rb") as pdf_file:
-                                st.download_button(
-                                    label="Download PDF Report",
-                                    data=pdf_file,
-                                    file_name=file_name,
-                                    mime="application/pdf",
-                                    help="Download comprehensive report with all analysis and plots",
-                                    key="download_pdf_btn"
+                            # Check if Google Drive is connected
+                            if st.session_state.user.get('drive_connected'):
+                                # Save to Google Drive
+                                from google_drive_integration import GoogleDriveService
+                                drive_service = GoogleDriveService()
+                                
+                                drive_url = drive_service.upload_file_to_drive(
+                                    pdf_path, 
+                                    file_name, 
+                                    st.session_state.user['id']
                                 )
-                            st.success("PDF report generated successfully!")
+                                
+                                if drive_url:
+                                    st.success(f"PDF report saved to Google Drive!")
+                                    st.markdown(f"[📎 View in Google Drive]({drive_url})")
+                                    
+                                    # Also provide local download
+                                    with open(pdf_path, "rb") as pdf_file:
+                                        st.download_button(
+                                            label="📥 Download Local Copy",
+                                            data=pdf_file,
+                                            file_name=file_name,
+                                            mime="application/pdf",
+                                            key="download_pdf_local_btn"
+                                        )
+                                else:
+                                    st.warning("Google Drive upload failed. Downloading locally.")
+                                    with open(pdf_path, "rb") as pdf_file:
+                                        st.download_button(
+                                            label="Download PDF Report",
+                                            data=pdf_file,
+                                            file_name=file_name,
+                                            mime="application/pdf",
+                                            key="download_pdf_fallback_btn"
+                                        )
+                            else:
+                                # Just local download
+                                with open(pdf_path, "rb") as pdf_file:
+                                    st.download_button(
+                                        label="Download PDF Report",
+                                        data=pdf_file,
+                                        file_name=file_name,
+                                        mime="application/pdf",
+                                        key="download_pdf_btn"
+                                    )
+                                st.success("PDF report generated successfully!")
                             
                             # Show what's included in the PDF
                             with st.expander("What's included in the PDF report?"):
@@ -461,7 +490,7 @@ def main_application():
                         st.info("You can still view all results above in the interactive display.")
 
     st.markdown("---")
-    st.markdown("**Oracle Cloud Deployment** | **Secure Authentication** | **Geospatial AI**")
+    st.markdown("**Google Drive Integration** | **Secure Authentication** | **Geospatial AI**")
 
 def main():
     # Initialize session state
@@ -480,7 +509,7 @@ def main():
         st.markdown('<div class="main-header">Geospatial Landcover Classification Platform</div>', unsafe_allow_html=True)
         show_auth0_login()
         st.markdown("---")
-        st.markdown("**Persistent User Data** | **Secure Authentication** | **Geospatial AI**")
+        st.markdown("**Google Drive Integration** | **Secure Authentication** | **Geospatial AI**")
     else:
         main_application()
 
