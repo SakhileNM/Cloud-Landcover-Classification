@@ -78,7 +78,7 @@ class EmailService:
         except Exception as e:
             return False, f"Failed to send email: {str(e)}"
 
-# Custom CSS
+# Custom CSS with theme support
 st.markdown("""
 <style>
     .main-header {
@@ -105,8 +105,44 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+def save_analysis_to_history(lat, lon, years, model_type, results):
+    """Save analysis to user's history"""
+    if 'auth0_service' in st.session_state and st.session_state.user:
+        auth_service = st.session_state.auth0_service
+        user_id = st.session_state.user['id']
+        
+        analysis_data = {
+            'analysis_type': 'landcover',
+            'lat': lat,
+            'lon': lon,
+            'years': years,
+            'model_type': model_type,
+            'results': results
+        }
+        
+        success = auth_service.save_analysis_history(user_id, analysis_data)
+        if success:
+            # Update analysis count in session
+            st.session_state.user['analysis_count'] = st.session_state.user.get('analysis_count', 0) + 1
+            
+            # Reload analysis history
+            history = auth_service.get_analysis_history(user_id)
+            st.session_state.user['analysis_history'] = history
+
 def main_application():
     """Main application for authenticated users"""
+    
+    # Apply user theme if set
+    user_theme = st.session_state.user.get('theme', 'light')
+    if user_theme == 'dark':
+        st.markdown("""
+        <style>
+            .main {
+                background-color: #0E1117;
+                color: white;
+            }
+        </style>
+        """, unsafe_allow_html=True)
     
     # Initialize services
     if 'dask_client' not in st.session_state:
@@ -118,7 +154,7 @@ def main_application():
     if 'email_service' not in st.session_state:
         st.session_state.email_service = EmailService()
 
-    # User welcome bar with three buttons
+    # User welcome bar
     if st.session_state.user:
         col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
         with col1:
@@ -137,7 +173,7 @@ def main_application():
                 st.session_state.show_profile = False
                 st.rerun()
         with col3:
-            if st.button("Profile Settings", key="profile_btn_main"):
+            if st.button("Profile", key="profile_btn_main"):
                 st.session_state.show_profile = True
                 st.rerun()
         with col4:
@@ -152,7 +188,7 @@ def main_application():
         show_auth0_profile()
         return
 
-    # Sidebar
+    # Sidebar with user preferences
     with st.sidebar:
         st.title("Navigation")
         
@@ -162,6 +198,7 @@ def main_application():
             st.write(f"**User:** {user['name']}")
             st.write(f"**Analyses:** {user.get('analysis_count', 0)} completed")
             
+            # Show user preferences status
             if user.get('email_notifications'):
                 st.success("Email Notifications: Enabled")
             else:
@@ -172,31 +209,40 @@ def main_application():
             else:
                 st.info("Google Drive: Available")
             
+            # Quick settings toggle
+            with st.expander("Quick Settings"):
+                current_theme = user.get('theme', 'light')
+                new_theme = st.selectbox(
+                    "Theme",
+                    ["light", "dark", "auto"],
+                    index=["light", "dark", "auto"].index(current_theme)
+                )
+                
+                if new_theme != current_theme:
+                    user['theme'] = new_theme
+                    st.session_state.user = user
+                    st.session_state.auth0_service.save_user_preferences(user['id'], user)
+                    st.rerun()
         
         st.markdown("---")
-        st.subheader("Machine Learning Models")
-        st.markdown("""
-        **Random Forest**
-        - Ensemble of decision trees
-        - Robust to overfitting
+        st.subheader("Analysis Settings")
         
-        **Gradient Boosting**  
-        - Sequential tree building
-        - Often higher accuracy
+        # Use user's saved preferences
+        user_default_model = st.session_state.user.get('default_model', 'Random Forest')
+        user_auto_save = st.session_state.user.get('auto_save', True)
         
-        **Sensor Selection**
-        - **Landsat**: 1995-2016 (30m resolution)
-        - **Sentinel-2**: 2017+ (10-20m resolution)
-        """)
+        st.write(f"**Default Model:** {user_default_model}")
+        st.write(f"**Auto-save:** {'Enabled' if user_auto_save else 'Disabled'}")
         
         st.markdown("---")
         st.subheader("Platform Features")
         st.markdown("""
         - User profiles and authentication
+        - Persistent preferences
+        - Analysis history tracking
         - Cloud storage integration
         - Custom theme settings
-        - Analysis history tracking
-        - Oracle Cloud deployment
+        - Progress tracking
         """)
 
     # Main content
@@ -210,7 +256,7 @@ def main_application():
         3. Select a machine learning model  
         4. Click Run Predictions to view classification maps and area summaries
         
-        *Deployed on Oracle Cloud with 4 OCPUs and 24GB RAM*
+        *All your preferences and analysis history are automatically saved*
         """
     )
 
@@ -219,7 +265,7 @@ def main_application():
     
     st.write("Select a location on the map")
 
-    # Create a Folium map centered on South Africa
+    # Create a Folium map
     folium_map = folium.Map(location=[-28.0, 24.0], zoom_start=5, tiles="OpenStreetMap")
     m = st_folium(folium_map, width=700, height=450)
 
@@ -269,18 +315,24 @@ def main_application():
                 try:
                     update_status(f"Starting predictions using {model_type} model...")
                     
-                    # Run predictions with model type selection
+                    # Run predictions
                     predictions, figures, areas_per_class, transition_matrices = predict_for_years(
                         lat, lon, selected_years, model_type, status_callback=update_status
                     )
                     
-                    # Update user analysis count
-                    user = st.session_state.user
-                    user['analysis_count'] = user.get('analysis_count', 0) + 1
-                    st.session_state.user = user
+                    # Save analysis to history
+                    save_analysis_to_history(
+                        lat, lon, selected_years, model_type, 
+                        {
+                            'predictions': len(predictions),
+                            'figures': len(figures),
+                            'areas_per_class': areas_per_class,
+                            'transition_matrices': len(transition_matrices)
+                        }
+                    )
                     
                     # Send email notification if enabled
-                    if user.get('email_notifications'):
+                    if st.session_state.user.get('email_notifications'):
                         update_status("Sending email notification...")
                         analysis_details = {
                             'location': f"Lat: {lat:.4f}, Lon: {lon:.4f}",
@@ -290,7 +342,7 @@ def main_application():
                         }
                         
                         success, message = st.session_state.email_service.send_analysis_completion_email(
-                            user['email'], user['name'], analysis_details
+                            st.session_state.user['email'], st.session_state.user['name'], analysis_details
                         )
                         
                         if success:
@@ -298,7 +350,7 @@ def main_application():
                         else:
                             update_status(f"Email notification failed: {message}")
                     
-                    # Store results for potential PDF generation
+                    # Store results
                     st.session_state.predictions = predictions
                     st.session_state.figures = figures
                     st.session_state.areas_per_class = areas_per_class
@@ -428,9 +480,8 @@ def main():
         st.markdown('<div class="main-header">Geospatial Landcover Classification Platform</div>', unsafe_allow_html=True)
         show_auth0_login()
         st.markdown("---")
-        st.markdown("**Oracle Cloud** | **Secure Authentication** | **Geospatial AI**")
+        st.markdown("**Persistent User Data** | **Secure Authentication** | **Geospatial AI**")
     else:
-        # User is authenticated, show main application
         main_application()
 
 if __name__ == "__main__":
