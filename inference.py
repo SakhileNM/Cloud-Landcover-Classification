@@ -1470,7 +1470,7 @@ def predict_for_years(lat, lon, years, model_type='Random Forest', status_callba
         if status_callback:
             status_callback("All processing complete.")
     
-        return predictions, figures, areas_per_class, transition_matrices
+        return predictions, figures, areas_per_class, transition_matrices, model_comparisons
 
 def compute_model_confidence(prediction_data):
     """
@@ -1858,7 +1858,7 @@ def create_model_comparison_plots(model_comparisons, years):
         if not years_list:
             return comparison_figures
 
-        # Plot 1: Model Scores Comparison
+        # Plot 1: Model Scores and Confidence Comparison
         fig1, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
         
         # Score comparison
@@ -1935,51 +1935,9 @@ def create_model_comparison_plots(model_comparisons, years):
         plt.tight_layout()
         comparison_figures.append(fig1)
 
-        # Plot 2: Model Selection Summary
-        fig2, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
-        
-        # Model selection count
-        rf_count = selected_models.count('Random Forest')
-        gb_count = selected_models.count('Gradient Boosting')
-        
-        colors = ['blue', 'red']
-        wedges, texts, autotexts = ax1.pie([rf_count, gb_count], 
-                                          labels=['Random Forest', 'Gradient Boosting'],
-                                          autopct='%1.1f%%', colors=colors,
-                                          startangle=90)
-        
-        for autotext in autotexts:
-            autotext.set_color('white')
-            autotext.set_fontweight('bold')
-        
-        ax1.set_title('Model Selection Distribution', fontsize=14, fontweight='bold')
-        
-        # Performance advantage plot
-        performance_differences = [rf_scores[i] - gb_scores[i] for i in range(len(rf_scores))]
-        
-        colors = ['red' if diff < 0 else 'blue' for diff in performance_differences]
-        bars = ax2.bar(years_list, performance_differences, color=colors, alpha=0.7)
-        
-        ax2.axhline(y=0, color='black', linestyle='-', alpha=0.3)
-        ax2.set_xlabel('Year')
-        ax2.set_ylabel('RF Score - GB Score')
-        ax2.set_title('Random Forest vs Gradient Boosting Performance\n(Positive = RF Better, Negative = GB Better)', 
-                     fontsize=14, fontweight='bold')
-        ax2.grid(True, alpha=0.3)
-        
-        # Add value labels
-        for bar, diff in zip(bars, performance_differences):
-            height = bar.get_height()
-            ax2.text(bar.get_x() + bar.get_width()/2., height + (0.01 if height >= 0 else -0.03),
-                    f'{diff:+.3f}', ha='center', va='bottom' if height >= 0 else 'top', 
-                    fontsize=9, fontweight='bold')
-        
-        plt.tight_layout()
-        comparison_figures.append(fig2)
-
-        # Plot 3: Detailed Metrics Comparison
+        # Plot 2: Detailed Metrics Comparison
         if len(years_list) > 1:  # Only create if we have multiple years
-            fig3, axes = plt.subplots(2, 2, figsize=(16, 12))
+            fig2, axes = plt.subplots(2, 2, figsize=(16, 12))
             axes = axes.flatten()
             
             metrics_to_plot = [
@@ -1989,7 +1947,7 @@ def create_model_comparison_plots(model_comparisons, years):
             ]
             
             for idx, (metric_name, metric_key) in enumerate(metrics_to_plot):
-                if idx >= len(axes):
+                if idx >= len(axes) - 1:  # Reserve one axis for text
                     break
                     
                 ax = axes[idx]
@@ -2013,20 +1971,34 @@ def create_model_comparison_plots(model_comparisons, years):
                 ax.legend()
                 ax.grid(True, alpha=0.3)
             
-            # Model selection reasons
+            # Model selection summary
             ax = axes[3]
             ax.axis('off')
-            reasons_text = "SELECTION REASONS BY YEAR:\n\n"
-            for year in years_list:
-                comp = model_comparisons[year]
-                reasons_text += f"{year}: {comp.get('selection_reason', 'N/A')}\n\n"
             
-            ax.text(0.1, 0.95, reasons_text, transform=ax.transAxes, fontsize=10,
-                   verticalalignment='top', fontfamily='monospace')
-            ax.set_title('Model Selection Rationale', fontsize=12, fontweight='bold')
+            # Calculate summary statistics
+            rf_wins = selected_models.count('Random Forest')
+            gb_wins = selected_models.count('Gradient Boosting')
+            total_years = len(years_list)
+            
+            summary_text = [
+                "MODEL SELECTION SUMMARY",
+                "=" * 30,
+                f"Total Years Analyzed: {total_years}",
+                f"Random Forest Selected: {rf_wins} ({rf_wins/total_years*100:.1f}%)",
+                f"Gradient Boosting Selected: {gb_wins} ({gb_wins/total_years*100:.1f}%)",
+                "",
+                "SELECTION CRITERIA:",
+                "• Model confidence scores",
+                "• Prediction consistency", 
+                "• Class distribution quality",
+                "• High-confidence pixel ratio"
+            ]
+            
+            ax.text(0.1, 0.95, "\n".join(summary_text), transform=ax.transAxes, fontsize=11,
+                   verticalalignment='top', fontfamily='monospace', fontweight='bold')
             
             plt.tight_layout()
-            comparison_figures.append(fig3)
+            comparison_figures.append(fig2)
 
     except Exception as e:
         _LOG.error(f"Error creating model comparison plots: {e}")
