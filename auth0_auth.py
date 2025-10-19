@@ -142,7 +142,7 @@ class Auth0Service:
                 conn.execute('''
                     INSERT OR REPLACE INTO user_preferences 
                     (user_id, default_model, auto_save, email_notifications, save_location, drive_connected, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ''', (
                     user_id,
                     preferences.get('default_model', 'Random Forest'),
@@ -253,14 +253,14 @@ def show_auth0_login():
         
         # Project description
         st.markdown("""
-        <div class="project-description">
-            <div class="project-title">Geospatial Landcover Classification Platform</div>
-            <p>This research project was developed by Sakhile Mkhize during his BEngTech Honours in Computer Engineering at CPUT. The research demonstrates how complex geospatial analysis tasks can be transformed into accessible, efficient processes through modern machine learning and cloud technologies.</p>
-            
-            <p>The platform features dual machine learning models - Random Forest and Gradient Boosting - trained on Western Cape regional data. Leveraging Digital Earth Africa's STAC dataset and deployed via Docker on Oracle Cloud infrastructure, the application enables stakeholders to accurately classify landcover using both Landsat and Sentinel satellite imagery from 1995 to 2023.</p>
-            
-            <p>Users can select specific locations, choose between individual models or automated model selection, analyze multiple years, and receive comprehensive results via email notifications or downloadable PDF reports stored locally or in Google Drive.</p>
-        </div>
+<div class="project-description">
+    <div class="project-title">Geospatial Landcover Classification Platform</div>
+    <p>This research project was developed by Sakhile Mkhize during his BEngTech Honours in Computer Engineering at CPUT. The research demonstrates how complex geospatial analysis tasks can be transformed into accessible, efficient processes through modern machine learning and cloud technologies.</p>
+    
+    <p>The platform features dual machine learning models - Random Forest and Gradient Boosting - trained on Western Cape regional data. Leveraging Digital Earth Africa's STAC dataset and deployed via Docker on Oracle Cloud infrastructure, the application enables stakeholders to accurately classify landcover using both Landsat and Sentinel satellite imagery from 1995 to 2023.</p>
+    
+    <p>Users can select specific locations, choose between individual models or automated model selection, analyze multiple years, and receive comprehensive results via email notifications or downloadable PDF reports stored locally or in Google Drive.</p>
+</div>
         """, unsafe_allow_html=True)
         
         # Centered Google login button
