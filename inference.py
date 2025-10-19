@@ -1828,7 +1828,216 @@ def predict_for_years_with_both_models(lat, lon, years, status_callback=None):
 
     return predictions, figures, areas_per_class, transition_matrices, model_comparisons
 
+def create_model_comparison_plots(model_comparisons, years):
+    """Create visual comparison plots between RF and GB models for PDF"""
+    comparison_figures = []
+    
+    if not model_comparisons:
+        return comparison_figures
+    
+    try:
+        # Extract data for plotting
+        years_list = []
+        rf_scores = []
+        gb_scores = []
+        rf_confidences = []
+        gb_confidences = []
+        selected_models = []
+        
+        for year in sorted(years):
+            if year in model_comparisons and isinstance(model_comparisons[year], dict):
+                comp = model_comparisons[year]
+                if 'rf_score' in comp and 'gb_score' in comp:
+                    years_list.append(year)
+                    rf_scores.append(comp['rf_score'])
+                    gb_scores.append(comp['gb_score'])
+                    rf_confidences.append(comp.get('rf_confidence', 0))
+                    gb_confidences.append(comp.get('gb_confidence', 0))
+                    selected_models.append(comp['selected_model'])
+        
+        if not years_list:
+            return comparison_figures
 
+        # Plot 1: Model Scores Comparison
+        fig1, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+        
+        # Score comparison
+        x = range(len(years_list))
+        width = 0.35
+        
+        bars1 = ax1.bar([i - width/2 for i in x], rf_scores, width, label='Random Forest', 
+                       color='skyblue', alpha=0.8)
+        bars2 = ax1.bar([i + width/2 for i in x], gb_scores, width, label='Gradient Boosting', 
+                       color='lightcoral', alpha=0.8)
+        
+        # Highlight the better model for each year
+        for i, (rf_score, gb_score, selected) in enumerate(zip(rf_scores, gb_scores, selected_models)):
+            if selected == 'Random Forest':
+                bars1[i].set_color('blue')
+                bars1[i].set_alpha(1.0)
+            else:
+                bars2[i].set_color('red')
+                bars2[i].set_alpha(1.0)
+        
+        ax1.set_xlabel('Year')
+        ax1.set_ylabel('Model Score')
+        ax1.set_title('Model Performance Scores by Year\n(Higher is Better)', fontsize=14, fontweight='bold')
+        ax1.set_xticks(x)
+        ax1.set_xticklabels(years_list)
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+        
+        # Add value labels on bars
+        for bar in bars1:
+            height = bar.get_height()
+            ax1.text(bar.get_x() + bar.get_width()/2., height + 0.01,
+                    f'{height:.3f}', ha='center', va='bottom', fontsize=9)
+        
+        for bar in bars2:
+            height = bar.get_height()
+            ax1.text(bar.get_x() + bar.get_width()/2., height + 0.01,
+                    f'{height:.3f}', ha='center', va='bottom', fontsize=9)
+        
+        # Confidence comparison
+        bars3 = ax2.bar([i - width/2 for i in x], rf_confidences, width, label='Random Forest', 
+                       color='lightgreen', alpha=0.8)
+        bars4 = ax2.bar([i + width/2 for i in x], gb_confidences, width, label='Gradient Boosting', 
+                       color='gold', alpha=0.8)
+        
+        # Highlight the better model for each year
+        for i, (rf_conf, gb_conf, selected) in enumerate(zip(rf_confidences, gb_confidences, selected_models)):
+            if selected == 'Random Forest':
+                bars3[i].set_color('green')
+                bars3[i].set_alpha(1.0)
+            else:
+                bars4[i].set_color('orange')
+                bars4[i].set_alpha(1.0)
+        
+        ax2.set_xlabel('Year')
+        ax2.set_ylabel('Confidence Score')
+        ax2.set_title('Model Confidence Scores by Year\n(Higher is Better)', fontsize=14, fontweight='bold')
+        ax2.set_xticks(x)
+        ax2.set_xticklabels(years_list)
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+        
+        # Add value labels on bars
+        for bar in bars3:
+            height = bar.get_height()
+            ax2.text(bar.get_x() + bar.get_width()/2., height + 0.01,
+                    f'{height:.3f}', ha='center', va='bottom', fontsize=9)
+        
+        for bar in bars4:
+            height = bar.get_height()
+            ax2.text(bar.get_x() + bar.get_width()/2., height + 0.01,
+                    f'{height:.3f}', ha='center', va='bottom', fontsize=9)
+        
+        plt.tight_layout()
+        comparison_figures.append(fig1)
+
+        # Plot 2: Model Selection Summary
+        fig2, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+        
+        # Model selection count
+        rf_count = selected_models.count('Random Forest')
+        gb_count = selected_models.count('Gradient Boosting')
+        
+        colors = ['blue', 'red']
+        wedges, texts, autotexts = ax1.pie([rf_count, gb_count], 
+                                          labels=['Random Forest', 'Gradient Boosting'],
+                                          autopct='%1.1f%%', colors=colors,
+                                          startangle=90)
+        
+        for autotext in autotexts:
+            autotext.set_color('white')
+            autotext.set_fontweight('bold')
+        
+        ax1.set_title('Model Selection Distribution', fontsize=14, fontweight='bold')
+        
+        # Performance advantage plot
+        performance_differences = [rf_scores[i] - gb_scores[i] for i in range(len(rf_scores))]
+        
+        colors = ['red' if diff < 0 else 'blue' for diff in performance_differences]
+        bars = ax2.bar(years_list, performance_differences, color=colors, alpha=0.7)
+        
+        ax2.axhline(y=0, color='black', linestyle='-', alpha=0.3)
+        ax2.set_xlabel('Year')
+        ax2.set_ylabel('RF Score - GB Score')
+        ax2.set_title('Random Forest vs Gradient Boosting Performance\n(Positive = RF Better, Negative = GB Better)', 
+                     fontsize=14, fontweight='bold')
+        ax2.grid(True, alpha=0.3)
+        
+        # Add value labels
+        for bar, diff in zip(bars, performance_differences):
+            height = bar.get_height()
+            ax2.text(bar.get_x() + bar.get_width()/2., height + (0.01 if height >= 0 else -0.03),
+                    f'{diff:+.3f}', ha='center', va='bottom' if height >= 0 else 'top', 
+                    fontsize=9, fontweight='bold')
+        
+        plt.tight_layout()
+        comparison_figures.append(fig2)
+
+        # Plot 3: Detailed Metrics Comparison
+        if len(years_list) > 1:  # Only create if we have multiple years
+            fig3, axes = plt.subplots(2, 2, figsize=(16, 12))
+            axes = axes.flatten()
+            
+            metrics_to_plot = [
+                ('High Confidence Ratio', 'high_conf_ratio'),
+                ('Confidence Std Dev', 'confidence_std'),
+                ('Class Balance Entropy', 'class_balance_entropy')
+            ]
+            
+            for idx, (metric_name, metric_key) in enumerate(metrics_to_plot):
+                if idx >= len(axes):
+                    break
+                    
+                ax = axes[idx]
+                rf_metrics = []
+                gb_metrics = []
+                
+                for year in years_list:
+                    comp = model_comparisons[year]
+                    rf_metrics.append(comp['rf_metrics'].get(metric_key, 0))
+                    gb_metrics.append(comp['gb_metrics'].get(metric_key, 0))
+                
+                x = range(len(years_list))
+                ax.bar([i - width/2 for i in x], rf_metrics, width, label='RF', color='skyblue')
+                ax.bar([i + width/2 for i in x], gb_metrics, width, label='GB', color='lightcoral')
+                
+                ax.set_xlabel('Year')
+                ax.set_ylabel(metric_name)
+                ax.set_title(f'{metric_name} Comparison', fontsize=12, fontweight='bold')
+                ax.set_xticks(x)
+                ax.set_xticklabels(years_list)
+                ax.legend()
+                ax.grid(True, alpha=0.3)
+            
+            # Model selection reasons
+            ax = axes[3]
+            ax.axis('off')
+            reasons_text = "SELECTION REASONS BY YEAR:\n\n"
+            for year in years_list:
+                comp = model_comparisons[year]
+                reasons_text += f"{year}: {comp.get('selection_reason', 'N/A')}\n\n"
+            
+            ax.text(0.1, 0.95, reasons_text, transform=ax.transAxes, fontsize=10,
+                   verticalalignment='top', fontfamily='monospace')
+            ax.set_title('Model Selection Rationale', fontsize=12, fontweight='bold')
+            
+            plt.tight_layout()
+            comparison_figures.append(fig3)
+
+    except Exception as e:
+        _LOG.error(f"Error creating model comparison plots: {e}")
+        # Create an error placeholder
+        fig_error, ax = plt.subplots(figsize=(10, 6))
+        ax.text(0.5, 0.5, f'Error generating model comparison plots:\n{str(e)}', 
+                ha='center', va='center', transform=ax.transAxes, fontsize=12)
+        ax.set_title('Model Comparison Plots (Error)')
+        comparison_figures.append(fig_error)
+    
+    return comparison_figures
 
 import datetime
 from matplotlib.backends.backend_pdf import PdfPages
@@ -1991,6 +2200,20 @@ def create_prediction_pdf(predictions, figures, areas_per_class, transition_matr
                     fontsize=11, verticalalignment='top', fontfamily='monospace')
             pdf.savefig()
             plt.close()
+            
+            # NEW: Add model comparison plots
+            comparison_figures = create_model_comparison_plots(model_comparisons, years)
+            for fig in comparison_figures:
+                # Save each comparison figure to the PDF
+                temp_path = f"temp_comparison_fig_{id(fig)}.png"
+                fig.savefig(temp_path, dpi=300, bbox_inches='tight', pad_inches=0.2)
+                img = plt.imread(temp_path)
+                plt.figure(figsize=(11, 8.5))
+                plt.axis('off')
+                plt.imshow(img)
+                pdf.savefig(bbox_inches='tight', dpi=300)
+                plt.close()
+                os.remove(temp_path)
         
         # Page 3: Automated analysis (existing code)
         analysis_text = generate_analysis_text(areas_per_class, transition_matrices, years, lat, lon)
@@ -2036,7 +2259,9 @@ def create_prediction_pdf(predictions, figures, areas_per_class, transition_matr
         if both_models_used:
             summary_text.extend([
                 "✓ Dual-model performance comparison",
-                "✓ Automated model selection per year"
+                "✓ Automated model selection per year",
+                "✓ Model confidence analysis",
+                "✓ Performance metrics visualization"
             ])
         
         summary_text.extend([
