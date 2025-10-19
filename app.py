@@ -131,18 +131,6 @@ def save_analysis_to_history(lat, lon, years, model_type, results):
 def main_application():
     """Main application for authenticated users"""
     
-    # Apply user theme if set
-    user_theme = st.session_state.user.get('theme', 'light')
-    if user_theme == 'dark':
-        st.markdown("""
-        <style>
-            .main {
-                background-color: #0E1117;
-                color: white;
-            }
-        </style>
-        """, unsafe_allow_html=True)
-    
     # Initialize services
     if 'dask_client' not in st.session_state:
         try:
@@ -199,29 +187,14 @@ def main_application():
             
             # Show user preferences status
             if user.get('email_notifications'):
-                st.success("📧 Email Notifications: Enabled")
+                st.success("Email Notifications: Enabled")
             else:
-                st.info("📧 Email Notifications: Disabled")
+                st.info("Email Notifications: Disabled")
             
             if user.get('drive_connected'):
-                st.success("☁️ Google Drive: Connected")
+                st.success("Google Drive: Connected")
             else:
-                st.info("☁️ Google Drive: Available")
-            
-            # Quick settings toggle
-            with st.expander("Quick Settings"):
-                current_theme = user.get('theme', 'light')
-                new_theme = st.selectbox(
-                    "Theme",
-                    ["light", "dark", "auto"],
-                    index=["light", "dark", "auto"].index(current_theme)
-                )
-                
-                if new_theme != current_theme:
-                    user['theme'] = new_theme
-                    st.session_state.user = user
-                    st.session_state.auth0_service.save_user_preferences(user['id'], user)
-                    st.rerun()
+                st.info("Google Drive: Available")
         
         st.markdown("---")
         st.subheader("Analysis Settings")
@@ -240,7 +213,6 @@ def main_application():
         - Persistent preferences
         - Analysis history tracking
         - Cloud storage integration
-        - Custom theme settings
         - Progress tracking
         """)
 
