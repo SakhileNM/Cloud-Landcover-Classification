@@ -496,10 +496,7 @@ def main():
 
     # Check authentication
     if not st.session_state.authenticated:
-        st.markdown('<div class="main-header">Geospatial Landcover Classification Platform</div>', unsafe_allow_html=True)
         show_auth0_login()
-        st.markdown("---")
-        st.markdown("**Google Drive Integration** | **Secure Authentication** | **Geospatial AI**")
     else:
         main_application()
 
