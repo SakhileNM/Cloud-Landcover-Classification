@@ -1258,219 +1258,219 @@ def predict_for_years(lat, lon, years, model_type='Random Forest', status_callba
                         status_callback(f"No prediction data for year {year}. Skipping.")
                     continue
 
-            # Materialize the Predictions array to numpy (safe and small)
-            pred_np = _materialize_da_to_numpy(prediction.Predictions)
-            if pred_np is None:
-                if status_callback:
-                    status_callback(f"Could not materialize predictions for year {year}. Skipping.")
-                continue
-
-            # Ensure pred_np is 2D
-            if pred_np.ndim == 0:
-                # Handle scalar case - create 1x1 array
-                pred_np = np.array([[pred_np]])
-            elif pred_np.ndim == 1:
-                # Handle 1D case - reshape to 2D (n, 1)
-                pred_np = pred_np.reshape(-1, 1)
-            elif pred_np.ndim > 2:
-                # try to squeeze singleton dimensions
-                pred_np = np.squeeze(pred_np)
-                
-            if pred_np.ndim != 2:
-                # it's unexpected; try to reshape if possible
-                try:
-                    pred_np = pred_np.reshape(prediction.Predictions.shape)
-                except Exception:
-                    _LOG.warning("Predictions for year %s are not 2D even after squeezing; skipping", year)
+                # Materialize the Predictions array to numpy (safe and small)
+                pred_np = _materialize_da_to_numpy(prediction.Predictions)
+                if pred_np is None:
                     if status_callback:
-                        status_callback(f"Predictions have unexpected shape for year {year}. Skipping.")
+                        status_callback(f"Could not materialize predictions for year {year}. Skipping.")
                     continue
-
-            # Create a shallow copy of prediction for plotting
-            prediction_for_plot = prediction.copy(deep=False)
-            
-            # Replace Predictions with numpy-backed DataArray
-            try:
-                # Get original dimensions
-                orig_dims = tuple(prediction.Predictions.dims) if hasattr(prediction.Predictions, 'dims') else ('y', 'x')
+    
+                # Ensure pred_np is 2D
+                if pred_np.ndim == 0:
+                    # Handle scalar case - create 1x1 array
+                    pred_np = np.array([[pred_np]])
+                elif pred_np.ndim == 1:
+                    # Handle 1D case - reshape to 2D (n, 1)
+                    pred_np = pred_np.reshape(-1, 1)
+                elif pred_np.ndim > 2:
+                    # try to squeeze singleton dimensions
+                    pred_np = np.squeeze(pred_np)
+                    
+                if pred_np.ndim != 2:
+                    # it's unexpected; try to reshape if possible
+                    try:
+                        pred_np = pred_np.reshape(prediction.Predictions.shape)
+                    except Exception:
+                        _LOG.warning("Predictions for year %s are not 2D even after squeezing; skipping", year)
+                        if status_callback:
+                            status_callback(f"Predictions have unexpected shape for year {year}. Skipping.")
+                        continue
+    
+                # Create a shallow copy of prediction for plotting
+                prediction_for_plot = prediction.copy(deep=False)
                 
-                # Create coordinates - handle both cases where coords exist and don't exist
-                coords = {}
-                if 'y' in orig_dims:
-                    try:
-                        y_coord = prediction.Predictions.coords.get('y', None)
-                        if y_coord is not None:
-                            y_np = _materialize_da_to_numpy(y_coord)
-                            if y_np is not None and len(y_np) == pred_np.shape[0]:
-                                coords['y'] = ('y', y_np)
-                    except Exception:
-                        pass
-                    if 'y' not in coords:
-                        coords['y'] = ('y', np.arange(pred_np.shape[0]))
-                        
-                if 'x' in orig_dims:
-                    try:
-                        x_coord = prediction.Predictions.coords.get('x', None)
-                        if x_coord is not None:
-                            x_np = _materialize_da_to_numpy(x_coord)
-                            if x_np is not None and len(x_np) == pred_np.shape[1]:
-                                coords['x'] = ('x', x_np)
-                    except Exception:
-                        pass
-                    if 'x' not in coords:
-                        coords['x'] = ('x', np.arange(pred_np.shape[1]))
-
-                # Create the DataArray
-                da_pred_numpy = xr.DataArray(pred_np, dims=orig_dims, coords=coords)
-                prediction_for_plot = prediction_for_plot.assign(Predictions=da_pred_numpy)
-
+                # Replace Predictions with numpy-backed DataArray
+                try:
+                    # Get original dimensions
+                    orig_dims = tuple(prediction.Predictions.dims) if hasattr(prediction.Predictions, 'dims') else ('y', 'x')
+                    
+                    # Create coordinates - handle both cases where coords exist and don't exist
+                    coords = {}
+                    if 'y' in orig_dims:
+                        try:
+                            y_coord = prediction.Predictions.coords.get('y', None)
+                            if y_coord is not None:
+                                y_np = _materialize_da_to_numpy(y_coord)
+                                if y_np is not None and len(y_np) == pred_np.shape[0]:
+                                    coords['y'] = ('y', y_np)
+                        except Exception:
+                            pass
+                        if 'y' not in coords:
+                            coords['y'] = ('y', np.arange(pred_np.shape[0]))
+                            
+                    if 'x' in orig_dims:
+                        try:
+                            x_coord = prediction.Predictions.coords.get('x', None)
+                            if x_coord is not None:
+                                x_np = _materialize_da_to_numpy(x_coord)
+                                if x_np is not None and len(x_np) == pred_np.shape[1]:
+                                    coords['x'] = ('x', x_np)
+                        except Exception:
+                            pass
+                        if 'x' not in coords:
+                            coords['x'] = ('x', np.arange(pred_np.shape[1]))
+    
+                    # Create the DataArray
+                    da_pred_numpy = xr.DataArray(pred_np, dims=orig_dims, coords=coords)
+                    prediction_for_plot = prediction_for_plot.assign(Predictions=da_pred_numpy)
+    
+                except Exception as e:
+                    _LOG.warning("Failed to create numpy-backed DataArray: %s", e)
+                    # Fallback: use original prediction but ensure it's computed
+                    prediction_for_plot = prediction.compute() if hasattr(prediction, 'compute') else prediction
+    
+                # In the area calculation section, add progress updates:
+                if status_callback:
+                    status_callback(f"Computing areas for year {year}...")
+    
+                # compute areas per class using numpy preds
+                classes = pred_np.ravel()
+                
+                # Filter out invalid predictions (values < 0)
+                valid_mask = classes >= 0
+                valid_classes = classes[valid_mask]
+                
+                if len(valid_classes) == 0:
+                    _LOG.warning("No valid predictions found for year %s", year)
+                    areas_per_class[year] = {label: 0.0 for label in class_labels}
+                else:
+                    valid_classes_int = valid_classes.astype(int)
+                    class_counts = np.bincount(valid_classes_int, minlength=len(class_labels))
+                    total_pixels = np.sum(class_counts)
+                
+                    areas_per_class[year] = {}
+                    for i, label in enumerate(class_labels):
+                        if i < len(class_counts):
+                            # Calculate percentage cover per class
+                            areas_per_class[year][label] = (class_counts[i] / total_pixels) * 100.0
+                        else:
+                            areas_per_class[year][label] = 0.0
+    
+    
+                if status_callback:
+                    status_callback(f"Area calculation completed for {year}")
+    
+                if status_callback:
+                    status_callback(f"Plotting results for year {year}...")
+                fig = plot_year_result(prediction_for_plot, year, model_used=model_type)
+                figures.append(fig)
+    
+                if status_callback:
+                    status_callback(f"Completed year {year}.")
+    
             except Exception as e:
-                _LOG.warning("Failed to create numpy-backed DataArray: %s", e)
-                # Fallback: use original prediction but ensure it's computed
-                prediction_for_plot = prediction.compute() if hasattr(prediction, 'compute') else prediction
-
-            # In the area calculation section, add progress updates:
+                # more detail for debugging
+                _LOG.exception("Error during processing year %s: %s", year, e)
+                if status_callback:
+                    status_callback(f"Error processing year {year}: {str(e)}")
+                # raise to keep behavior consistent with previous code
+                raise RuntimeError(f"Year {year} processing failed: {str(e)}")
+    
+        if not areas_per_class:
             if status_callback:
-                status_callback(f"Computing areas for year {year}...")
-
-            # compute areas per class using numpy preds
-            classes = pred_np.ravel()
-            
-            # Filter out invalid predictions (values < 0)
-            valid_mask = classes >= 0
-            valid_classes = classes[valid_mask]
-            
-            if len(valid_classes) == 0:
-                _LOG.warning("No valid predictions found for year %s", year)
-                areas_per_class[year] = {label: 0.0 for label in class_labels}
+                status_callback("No successful predictions for any year. Please try a different location or year.")
+            raise RuntimeError("No successful predictions for any year. Please try a different location or year.")
+    
+        # Area summary plot - higher quality
+        if status_callback:
+            status_callback("Generating area summary plot...")
+        df_areas = pd.DataFrame(areas_per_class).T.fillna(0)
+        fig_area, ax = plt.subplots(figsize=(14, 8), dpi=150)  # Higher quality
+        df_areas.plot(kind='bar', stacked=True, ax=ax,
+                    color=[class_colors[label] for label in class_labels])
+        ax.set_title('Land Cover Area Over Time', fontsize=16, fontweight='bold')
+        ax.set_xlabel('Year', fontsize=14)
+        ax.set_ylabel('Area (%)', fontsize=14)
+        ax.legend(title='Classes', bbox_to_anchor=(1.05, 1), fontsize=12)
+        plt.tight_layout()
+        figures.append(fig_area)
+    
+        # Only generate difference plot if we have multiple years
+        if len(years) > 1:
+            if status_callback:
+                status_callback("Generating area difference plot...")
+            df_diff = df_areas.diff().dropna()
+            if not df_diff.empty:
+                fig_diff, ax = plt.subplots(figsize=(12, 8))
+                df_diff.plot(kind='bar', ax=ax, color=[class_colors[label] for label in class_labels])
+                ax.set_title('Yearly Area Changes')
+                ax.set_xlabel('Year')
+                ax.set_ylabel('Area Change (%)')
+                ax.legend(title='Classes', bbox_to_anchor=(1.05, 1))
+                plt.tight_layout()
+                figures.append(fig_diff)
             else:
-                valid_classes_int = valid_classes.astype(int)
-                class_counts = np.bincount(valid_classes_int, minlength=len(class_labels))
-                total_pixels = np.sum(class_counts)
-            
-                areas_per_class[year] = {}
-                for i, label in enumerate(class_labels):
-                    if i < len(class_counts):
-                        # Calculate percentage cover per class
-                        areas_per_class[year][label] = (class_counts[i] / total_pixels) * 100.0
-                    else:
-                        areas_per_class[year][label] = 0.0
-
-
-            if status_callback:
-                status_callback(f"Area calculation completed for {year}")
-
-            if status_callback:
-                status_callback(f"Plotting results for year {year}...")
-            fig = plot_year_result(prediction_for_plot, year, model_used=model_type)
-            figures.append(fig)
-
-            if status_callback:
-                status_callback(f"Completed year {year}.")
-
-        except Exception as e:
-            # more detail for debugging
-            _LOG.exception("Error during processing year %s: %s", year, e)
-            if status_callback:
-                status_callback(f"Error processing year {year}: {str(e)}")
-            # raise to keep behavior consistent with previous code
-            raise RuntimeError(f"Year {year} processing failed: {str(e)}")
-
-    if not areas_per_class:
-        if status_callback:
-            status_callback("No successful predictions for any year. Please try a different location or year.")
-        raise RuntimeError("No successful predictions for any year. Please try a different location or year.")
-
-    # Area summary plot - higher quality
-    if status_callback:
-        status_callback("Generating area summary plot...")
-    df_areas = pd.DataFrame(areas_per_class).T.fillna(0)
-    fig_area, ax = plt.subplots(figsize=(14, 8), dpi=150)  # Higher quality
-    df_areas.plot(kind='bar', stacked=True, ax=ax,
-                color=[class_colors[label] for label in class_labels])
-    ax.set_title('Land Cover Area Over Time', fontsize=16, fontweight='bold')
-    ax.set_xlabel('Year', fontsize=14)
-    ax.set_ylabel('Area (%)', fontsize=14)
-    ax.legend(title='Classes', bbox_to_anchor=(1.05, 1), fontsize=12)
-    plt.tight_layout()
-    figures.append(fig_area)
-
-    # Only generate difference plot if we have multiple years
-    if len(years) > 1:
-        if status_callback:
-            status_callback("Generating area difference plot...")
-        df_diff = df_areas.diff().dropna()
-        if not df_diff.empty:
-            fig_diff, ax = plt.subplots(figsize=(12, 8))
-            df_diff.plot(kind='bar', ax=ax, color=[class_colors[label] for label in class_labels])
-            ax.set_title('Yearly Area Changes')
-            ax.set_xlabel('Year')
-            ax.set_ylabel('Area Change (%)')
-            ax.legend(title='Classes', bbox_to_anchor=(1.05, 1))
-            plt.tight_layout()
-            figures.append(fig_diff)
+                _LOG.info("Skipping area difference plot - no data after differencing")
         else:
-            _LOG.info("Skipping area difference plot - no data after differencing")
-    else:
-        _LOG.info("Skipping area difference plot - only one year of data")
-        # Create a placeholder message for single year
-        fig_placeholder, ax = plt.subplots(figsize=(10, 6))
-        ax.text(0.5, 0.5, 'Area difference plot requires\nmultiple years of data', 
-                ha='center', va='center', transform=ax.transAxes, fontsize=14)
-        ax.set_title('Area Changes (Multiple Years Required)')
-        figures.append(fig_placeholder)
-
-    # Transition matrices (for consecutive years) - only if we have multiple years
-    if len(years) > 1:
-        for i in range(len(years) - 1):
-            year_from = years[i]
-            year_to = years[i + 1]
-            if year_from not in predictions or year_to not in predictions:
-                continue
-            if status_callback:
-                status_callback(f"Computing transitions: {year_from} → {year_to}...")
-
-            # materialize both predictions safely
-            pred1_np = _materialize_da_to_numpy(predictions[year_from].Predictions)
-            pred2_np = _materialize_da_to_numpy(predictions[year_to].Predictions)
-            if pred1_np is None or pred2_np is None:
-                _LOG.warning("Skipping transition matrix for %s-%s due to inability to materialize predictions", year_from, year_to)
-                continue
-
-            # ensure 2D shapes
-            pred1_np = np.squeeze(pred1_np)
-            pred2_np = np.squeeze(pred2_np)
-            
-            # Check if arrays are not empty
-            if pred1_np.size == 0 or pred2_np.size == 0:
-                _LOG.warning("Skipping transition matrix for %s-%s due to empty predictions", year_from, year_to)
-                continue
+            _LOG.info("Skipping area difference plot - only one year of data")
+            # Create a placeholder message for single year
+            fig_placeholder, ax = plt.subplots(figsize=(10, 6))
+            ax.text(0.5, 0.5, 'Area difference plot requires\nmultiple years of data', 
+                    ha='center', va='center', transform=ax.transAxes, fontsize=14)
+            ax.set_title('Area Changes (Multiple Years Required)')
+            figures.append(fig_placeholder)
+    
+        # Transition matrices (for consecutive years) - only if we have multiple years
+        if len(years) > 1:
+            for i in range(len(years) - 1):
+                year_from = years[i]
+                year_to = years[i + 1]
+                if year_from not in predictions or year_to not in predictions:
+                    continue
+                if status_callback:
+                    status_callback(f"Computing transitions: {year_from} → {year_to}...")
+    
+                # materialize both predictions safely
+                pred1_np = _materialize_da_to_numpy(predictions[year_from].Predictions)
+                pred2_np = _materialize_da_to_numpy(predictions[year_to].Predictions)
+                if pred1_np is None or pred2_np is None:
+                    _LOG.warning("Skipping transition matrix for %s-%s due to inability to materialize predictions", year_from, year_to)
+                    continue
+    
+                # ensure 2D shapes
+                pred1_np = np.squeeze(pred1_np)
+                pred2_np = np.squeeze(pred2_np)
                 
-            try:
-                matrix = compute_transition_matrix(
-                    xr.Dataset({'Predictions': (('y', 'x'), pred1_np)}),
-                    xr.Dataset({'Predictions': (('y', 'x'), pred2_np)}),
-                    class_labels
-                )
-                norm_matrix = normalize_transition_matrix(matrix)
-                fig_trans = plot_transition_matrix(norm_matrix, class_labels, year_from, year_to)
-                transition_matrices[f"{year_from}-{year_to}"] = norm_matrix
-                figures.append(fig_trans)
-            except Exception as e:
-                _LOG.warning("Failed to compute/plot transition for %s-%s: %s", year_from, year_to, e)
-    else:
-        _LOG.info("Skipping transition matrices - only one year of data")
-        # Create a placeholder for transition matrix
-        fig_placeholder, ax = plt.subplots(figsize=(10, 6))
-        ax.text(0.5, 0.5, 'Transition matrices require\nmultiple years of data', 
-                ha='center', va='center', transform=ax.transAxes, fontsize=14)
-        ax.set_title('Land Cover Transitions (Multiple Years Required)')
-        figures.append(fig_placeholder)
-
-    if status_callback:
-        status_callback("All processing complete.")
-
-    return predictions, figures, areas_per_class, transition_matrices
+                # Check if arrays are not empty
+                if pred1_np.size == 0 or pred2_np.size == 0:
+                    _LOG.warning("Skipping transition matrix for %s-%s due to empty predictions", year_from, year_to)
+                    continue
+                    
+                try:
+                    matrix = compute_transition_matrix(
+                        xr.Dataset({'Predictions': (('y', 'x'), pred1_np)}),
+                        xr.Dataset({'Predictions': (('y', 'x'), pred2_np)}),
+                        class_labels
+                    )
+                    norm_matrix = normalize_transition_matrix(matrix)
+                    fig_trans = plot_transition_matrix(norm_matrix, class_labels, year_from, year_to)
+                    transition_matrices[f"{year_from}-{year_to}"] = norm_matrix
+                    figures.append(fig_trans)
+                except Exception as e:
+                    _LOG.warning("Failed to compute/plot transition for %s-%s: %s", year_from, year_to, e)
+        else:
+            _LOG.info("Skipping transition matrices - only one year of data")
+            # Create a placeholder for transition matrix
+            fig_placeholder, ax = plt.subplots(figsize=(10, 6))
+            ax.text(0.5, 0.5, 'Transition matrices require\nmultiple years of data', 
+                    ha='center', va='center', transform=ax.transAxes, fontsize=14)
+            ax.set_title('Land Cover Transitions (Multiple Years Required)')
+            figures.append(fig_placeholder)
+    
+        if status_callback:
+            status_callback("All processing complete.")
+    
+        return predictions, figures, areas_per_class, transition_matrices
 
 def compute_model_confidence(prediction_data):
     """
