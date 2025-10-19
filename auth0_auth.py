@@ -43,7 +43,6 @@ class Auth0Service:
             conn.execute('''
                 CREATE TABLE IF NOT EXISTS user_preferences (
                     user_id TEXT PRIMARY KEY,
-                    theme TEXT DEFAULT 'light',
                     default_model TEXT DEFAULT 'Random Forest',
                     auto_save BOOLEAN DEFAULT 1,
                     email_notifications BOOLEAN DEFAULT 0,
@@ -119,14 +118,13 @@ class Auth0Service:
         try:
             with get_db_connection() as conn:
                 cursor = conn.execute(
-                    '''SELECT theme, default_model, auto_save, email_notifications, save_location, drive_connected 
+                    '''SELECT default_model, auto_save, email_notifications, save_location, drive_connected 
                        FROM user_preferences WHERE user_id = ?''',
                     (user_id,)
                 )
                 result = cursor.fetchone()
                 if result:
                     return {
-                        'theme': result[0],
                         'default_model': result[1],
                         'auto_save': bool(result[2]),
                         'email_notifications': bool(result[3]),
@@ -143,11 +141,10 @@ class Auth0Service:
             with get_db_connection() as conn:
                 conn.execute('''
                     INSERT OR REPLACE INTO user_preferences 
-                    (user_id, theme, default_model, auto_save, email_notifications, save_location, drive_connected, updated_at)
+                    (user_id, default_model, auto_save, email_notifications, save_location, drive_connected, updated_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ''', (
                     user_id,
-                    preferences.get('theme', 'light'),
                     preferences.get('default_model', 'Random Forest'),
                     int(preferences.get('auto_save', True)),
                     int(preferences.get('email_notifications', False)),
@@ -267,7 +264,6 @@ def handle_auth0_callback():
                 if not preferences:
                     # Create default preferences for new user
                     preferences = {
-                        'theme': 'light',
                         'default_model': 'Random Forest',
                         'auto_save': True,
                         'email_notifications': False,
@@ -328,13 +324,6 @@ def show_auth0_profile():
         st.subheader("Personal Settings")
         
         with st.form(key="user_preferences_form"):
-            # Interface preferences
-            st.write("**Interface Preferences**")
-            theme = st.selectbox(
-                "Theme",
-                ["light", "dark", "auto"],
-                index=["light", "dark", "auto"].index(user.get('theme', 'light'))
-            )
             
             # Analysis preferences
             st.write("**Analysis Preferences**")
@@ -366,7 +355,6 @@ def show_auth0_profile():
             submitted = st.form_submit_button("Save Preferences")
             if submitted:
                 new_preferences = {
-                    'theme': theme,
                     'default_model': default_model,
                     'auto_save': auto_save,
                     'email_notifications': email_notifications,
