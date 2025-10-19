@@ -8,64 +8,64 @@ from googleapiclient.http import MediaFileUpload
 class GoogleDriveService:
     def __init__(self):
         self.SCOPES = ['https://www.googleapis.com/auth/drive.file']
-        self.redirect_uri = os.getenv('AUTH0_REDIRECT_URI', 'http://localhost:8501')
-    
-    def get_credentials(self, user_id):
-        """Get stored credentials for user"""
-        if 'google_credentials' in st.session_state:
-            return Credentials.from_authorized_user_info(st.session_state.google_credentials, self.SCOPES)
-        return None
-    
-    def save_credentials(self, credentials):
-        """Save credentials to session"""
-        st.session_state.google_credentials = {
-            'token': credentials.token,
-            'refresh_token': credentials.refresh_token,
-            'token_uri': credentials.token_uri,
-            'client_id': credentials.client_id,
-            'client_secret': credentials.client_secret,
-            'scopes': credentials.scopes
-        }
+        # Use the exact same redirect URI as registered in Google Cloud Console
+        self.redirect_uri = os.getenv('GOOGLE_REDIRECT_URI', 'http://localhost:8501')
     
     def start_oauth_flow(self):
         """Start Google OAuth flow"""
-        flow = Flow.from_client_secrets_file(
-            'client_secrets.json',
-            scopes=self.SCOPES,
-            redirect_uri=self.redirect_uri
-        )
-        
-        authorization_url, state = flow.authorization_url(
-            access_type='offline',
-            include_granted_scopes='true'
-        )
-        
-        st.session_state.google_oauth_state = state
-        st.markdown(f'<meta http-equiv="refresh" content="0; url={authorization_url}">', unsafe_allow_html=True)
-        return authorization_url
+        try:
+            flow = Flow.from_client_secrets_file(
+                'client_secrets.json',
+                scopes=self.SCOPES,
+                redirect_uri=self.redirect_uri
+            )
+            
+            # For web credentials, use the exact redirect URI
+            authorization_url, state = flow.authorization_url(
+                access_type='offline',
+                include_granted_scopes='true',
+                prompt='consent'
+            )
+            
+            st.session_state.google_oauth_state = state
+            
+            # Use Streamlit's native redirect instead of meta refresh
+            st.markdown(f'[Click here to authenticate with Google Drive]({authorization_url})')
+            st.stop()
+            
+        except Exception as e:
+            st.error(f"OAuth configuration error: {e}")
+            return None
     
     def handle_callback(self):
         """Handle OAuth callback"""
         if 'code' in st.query_params and 'google_oauth_state' in st.session_state:
-            flow = Flow.from_client_secrets_file(
-                'client_secrets.json',
-                scopes=self.SCOPES,
-                state=st.session_state.google_oauth_state,
-                redirect_uri=self.redirect_uri
-            )
-            
-            flow.fetch_token(authorization_response=st.query_params['code'])
-            credentials = flow.credentials
-            
-            self.save_credentials(credentials)
-            st.session_state.user['drive_connected'] = True
-            
-            # Clear the state
-            del st.session_state.google_oauth_state
-            st.query_params.clear()
-            
-            st.success("Google Drive connected successfully!")
-            st.rerun()
+            try:
+                flow = Flow.from_client_secrets_file(
+                    'client_secrets.json',
+                    scopes=self.SCOPES,
+                    state=st.session_state.google_oauth_state,
+                    redirect_uri=self.redirect_uri
+                )
+                
+                # Get the full URL for token exchange
+                full_redirect_uri = f"{self.redirect_uri}?{st.query_params.to_dict()}"
+                flow.fetch_token(authorization_response=full_redirect_uri)
+                
+                credentials = flow.credentials
+                self.save_credentials(credentials)
+                
+                if 'user' in st.session_state:
+                    st.session_state.user['drive_connected'] = True
+                
+                # Clear the state and query params
+                del st.session_state.google_oauth_state
+                st.query_params.clear()
+                
+                st.success("Google Drive connected successfully!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"OAuth callback error: {e}")
     
     def upload_file(self, file_path, file_name):
         """Upload file to Google Drive"""
