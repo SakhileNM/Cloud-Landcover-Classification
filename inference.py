@@ -25,6 +25,7 @@ from deafrica_tools.plotting import rgb
 import streamlit as st
 from odc.stac import stac_load, configure_rio
 from pystac_client import Client as STACClient
+from sklearn.metrics import accuracy_score, f1_score
 
 warnings.filterwarnings("ignore")
 logging.basicConfig(level=logging.INFO)
@@ -940,7 +941,7 @@ def _materialize_da_to_numpy(da):
         except Exception:
             return None
 
-def plot_year_result(prediction_data, year):
+def plot_year_result(prediction_data, year, model_used=None):
     """Generate high-resolution 3-panel plot with enhanced image processing"""
     # Increase DPI for higher resolution
     fig, axes = plt.subplots(1, 3, figsize=(30, 10), dpi=300)
@@ -960,12 +961,15 @@ def plot_year_result(prediction_data, year):
     predictions_2d = plot_data.Predictions
     if predictions_2d.ndim > 2:
         predictions_2d = predictions_2d.squeeze()
+
+    # Add model information to the title if provided
+    title_suffix = f" ({model_used})" if model_used else ""
     
     # Use nearest neighbor interpolation for crisp edges in classification
     im = axes[0].imshow(predictions_2d, cmap=cmap, norm=norm, interpolation='nearest')
     cbar = fig.colorbar(im, ax=axes[0], ticks=range(len(class_labels)))
     cbar.ax.set_yticklabels(class_labels)
-    axes[0].set_title(f'Classification ({year})', fontsize=14, fontweight='bold')
+    axes[0].set_title(f'Classification {year}{title_suffix}', fontsize=14, fontweight='bold')
     
     # Enhanced True color image with advanced processing
     try:
@@ -1201,61 +1205,58 @@ def predict_for_years(lat, lon, years, model_type='Random Forest', status_callba
     Main prediction function for Streamlit with robust handling of lazy arrays.
     Materializes only the small prediction arrays needed for plotting and counts.
     """
-    years = sorted(years)
-    predictions = {}
-    figures = []
-    areas_per_class = {}
-    transition_matrices = {}
+    if model_type == 'Both (Auto-Select Best)':
+        return predict_for_years_with_both_models(lat, lon, years, status_callback)
+    else:
+        # Original single-model implementation
+        years = sorted(years)
+        predictions = {}
+        figures = []
+        areas_per_class = {}
+        transition_matrices = {}
+        model_comparisons = {}  # For consistency, even with single model
 
-    def _materialize_da_to_numpy(da):
-        """
-        Safely convert an xarray DataArray (possibly dask-backed) to a numpy array.
-        If the DataArray has a dask array under .data, compute only that.
-        """
-        try:
-            # prefer .data.compute() when available
-            if hasattr(da, "data") and hasattr(da.data, "compute"):
-                result = da.data.compute()
-            # fallback: .values may be a dask array
-            elif hasattr(da, "values") and hasattr(da.values, "compute"):
-                result = da.values.compute()
-            # last resort
-            else:
-                result = np.asarray(da)
-            
-            # Ensure we return a proper numpy array, not a 0-d array
-            if hasattr(result, 'shape') and result.shape == ():
-                return np.array([result])
-            
-            # Preserve original data type for maximum precision
-            return result.astype(da.dtype if hasattr(da, 'dtype') else result.dtype)
-        
-        except Exception as e:
-            _LOG.warning("Could not materialize DataArray to numpy: %s; falling back to np.asarray", e)
+        def _materialize_da_to_numpy(da):
             try:
-                result = np.asarray(da)
+                if hasattr(da, "data") and hasattr(da.data, "compute"):
+                    result = da.data.compute()
+                elif hasattr(da, "values") and hasattr(da.values, "compute"):
+                    result = da.values.compute()
+                else:
+                    result = np.asarray(da)
+                
                 if hasattr(result, 'shape') and result.shape == ():
                     return np.array([result])
                 return result
-            except Exception:
-                # give up gracefully
-                return None
+            except Exception as e:
+                _LOG.warning("Could not materialize DataArray: %s", e)
+                try:
+                    return np.asarray(da)
+                except Exception:
+                    return None
 
-    if status_callback:
-        status_callback("Starting predictions...")
+        if status_callback:
+            status_callback("Starting predictions...")
 
-    for idx, year in enumerate(years):
-        try:
-            if status_callback:
-                status_callback(f"Predicting for year {year} ({idx+1}/{len(years)})...")
-            prediction = predict_for_location(lat, lon, year, model_type)
-            predictions[year] = prediction
-
-            # check prediction presence
-            if prediction is None or not hasattr(prediction, "Predictions"):
+        for idx, year in enumerate(years):
+            try:
                 if status_callback:
-                    status_callback(f"No prediction data for year {year}. Skipping.")
-                continue
+                    status_callback(f"Predicting for year {year} ({idx+1}/{len(years)})...")
+                prediction = predict_for_location(lat, lon, year, model_type)
+                predictions[year] = prediction
+
+                # Store model info for single model case
+                model_comparisons[year] = {
+                    'year': year,
+                    'selected_model': model_type,
+                    'single_model_used': True
+                }
+
+                # check prediction presence
+                if prediction is None or not hasattr(prediction, "Predictions"):
+                    if status_callback:
+                        status_callback(f"No prediction data for year {year}. Skipping.")
+                    continue
 
             # Materialize the Predictions array to numpy (safe and small)
             pred_np = _materialize_da_to_numpy(prediction.Predictions)
@@ -1361,7 +1362,7 @@ def predict_for_years(lat, lon, years, model_type='Random Forest', status_callba
 
             if status_callback:
                 status_callback(f"Plotting results for year {year}...")
-            fig = plot_year_result(prediction_for_plot, year)
+            fig = plot_year_result(prediction_for_plot, year, model_used=model_type)
             figures.append(fig)
 
             if status_callback:
@@ -1471,6 +1472,363 @@ def predict_for_years(lat, lon, years, model_type='Random Forest', status_callba
 
     return predictions, figures, areas_per_class, transition_matrices
 
+def compute_model_confidence(prediction_data):
+    """
+    Compute model confidence based on prediction probabilities.
+    Higher confidence means the model is more certain about its predictions.
+    """
+    try:
+        if 'Probabilities' not in prediction_data.data_vars:
+            return 0.0
+        
+        # Get maximum probability for each pixel
+        max_probs = prediction_data.Probabilities.max(dim='class')
+        
+        # Compute average confidence across all pixels
+        avg_confidence = float(max_probs.mean().values)
+        
+        # Also consider consistency (low entropy)
+        probs = prediction_data.Probabilities.values
+        entropy = -np.sum(probs * np.log(probs + 1e-8), axis=-1)
+        avg_entropy = float(np.mean(entropy))
+        
+        # Confidence score: higher average probability and lower entropy is better
+        confidence_score = avg_confidence * (1 - avg_entropy)
+        
+        return max(0.0, min(1.0, confidence_score))
+    
+    except Exception as e:
+        _LOG.warning(f"Error computing model confidence: {e}")
+        return 0.0
+
+def compute_model_quality_metrics(prediction_data):
+    """
+    Compute additional quality metrics for model evaluation.
+    """
+    metrics = {}
+    
+    try:
+        if 'Probabilities' not in prediction_data.data_vars:
+            return metrics
+        
+        # 1. Average confidence
+        max_probs = prediction_data.Probabilities.max(dim='class')
+        metrics['avg_confidence'] = float(max_probs.mean().values)
+        
+        # 2. Confidence std (lower is more consistent)
+        metrics['confidence_std'] = float(max_probs.std().values)
+        
+        # 3. Percentage of high-confidence predictions (>0.8)
+        high_conf_pixels = (max_probs > 0.8).sum()
+        total_pixels = max_probs.count()
+        metrics['high_conf_ratio'] = float(high_conf_pixels / total_pixels) if total_pixels > 0 else 0.0
+        
+        # 4. Class distribution balance (entropy of class distribution)
+        predictions = prediction_data.Predictions.values.flatten()
+        valid_predictions = predictions[predictions >= 0]
+        if len(valid_predictions) > 0:
+            class_counts = np.bincount(valid_predictions.astype(int), minlength=len(class_labels))
+            class_probs = class_counts / class_counts.sum()
+            class_entropy = -np.sum(class_probs * np.log(class_probs + 1e-8))
+            metrics['class_balance_entropy'] = float(class_entropy)
+        else:
+            metrics['class_balance_entropy'] = 0.0
+            
+    except Exception as e:
+        _LOG.warning(f"Error computing quality metrics: {e}")
+    
+    return metrics
+
+def select_best_model(prediction_rf, prediction_gb, year):
+    """
+    Select the best model based on multiple quality metrics.
+    Returns the best prediction and model comparison data.
+    """
+    try:
+        # Compute confidence scores
+        rf_confidence = compute_model_confidence(prediction_rf)
+        gb_confidence = compute_model_confidence(prediction_gb)
+        
+        # Compute additional quality metrics
+        rf_metrics = compute_model_quality_metrics(prediction_rf)
+        gb_metrics = compute_model_quality_metrics(prediction_gb)
+        
+        # Combined scoring (you can adjust weights based on what's important)
+        rf_score = (
+            rf_confidence * 0.6 +  # Confidence is most important
+            rf_metrics.get('high_conf_ratio', 0) * 0.3 +
+            (1 - rf_metrics.get('confidence_std', 1)) * 0.1  # Lower std is better
+        )
+        
+        gb_score = (
+            gb_confidence * 0.6 +
+            gb_metrics.get('high_conf_ratio', 0) * 0.3 +
+            (1 - gb_metrics.get('confidence_std', 1)) * 0.1
+        )
+        
+        # Select the best model
+        if rf_score >= gb_score:
+            selected_model = 'Random Forest'
+            selected_prediction = prediction_rf
+            selection_reason = f"Random Forest had higher confidence (RF: {rf_score:.3f} vs GB: {gb_score:.3f})"
+        else:
+            selected_model = 'Gradient Boosting'
+            selected_prediction = prediction_gb
+            selection_reason = f"Gradient Boosting had higher confidence (GB: {gb_score:.3f} vs RF: {rf_score:.3f})"
+        
+        # Store comparison data for PDF reporting
+        comparison_data = {
+            'year': year,
+            'selected_model': selected_model,
+            'rf_score': rf_score,
+            'gb_score': gb_score,
+            'rf_confidence': rf_confidence,
+            'gb_confidence': gb_confidence,
+            'rf_metrics': rf_metrics,
+            'gb_metrics': gb_metrics,
+            'selection_reason': selection_reason
+        }
+        
+        _LOG.info(f"Year {year}: Selected {selected_model} (RF: {rf_score:.3f}, GB: {gb_score:.3f})")
+        
+        return selected_prediction, selected_model, comparison_data
+        
+    except Exception as e:
+        _LOG.error(f"Error in model selection for year {year}: {e}")
+        # Fallback to Random Forest
+        return prediction_rf, 'Random Forest', {'error': str(e), 'year': year}
+
+
+def predict_for_years_with_both_models(lat, lon, years, status_callback=None):
+    """
+    Run both models and automatically select the best one for each year.
+    """
+    years = sorted(years)
+    predictions = {}
+    figures = []
+    areas_per_class = {}
+    transition_matrices = {}
+    model_comparisons = {}  # Store which model was selected for each year and why
+    selected_models = {}    # Track which model was actually used per year
+    
+    def _materialize_da_to_numpy(da):
+        """Safely convert DataArray to numpy array"""
+        try:
+            if hasattr(da, "data") and hasattr(da.data, "compute"):
+                result = da.data.compute()
+            elif hasattr(da, "values") and hasattr(da.values, "compute"):
+                result = da.values.compute()
+            else:
+                result = np.asarray(da)
+            
+            if hasattr(result, 'shape') and result.shape == ():
+                return np.array([result])
+            return result
+        except Exception as e:
+            _LOG.warning("Could not materialize DataArray: %s", e)
+            try:
+                return np.asarray(da)
+            except Exception:
+                return None
+
+    if status_callback:
+        status_callback("Starting dual-model predictions...")
+
+    for idx, year in enumerate(years):
+        try:
+            if status_callback:
+                status_callback(f"Running both models for year {year} ({idx+1}/{len(years)})...")
+            
+            # Run Random Forest
+            if status_callback:
+                status_callback(f"Running Random Forest for {year}...")
+            prediction_rf = predict_for_location(lat, lon, year, 'Random Forest')
+            
+            # Run Gradient Boosting
+            if status_callback:
+                status_callback(f"Running Gradient Boosting for {year}...")
+            prediction_gb = predict_for_location(lat, lon, year, 'Gradient Boosting')
+            
+            # Select the best model
+            if status_callback:
+                status_callback(f"Selecting best model for {year}...")
+            best_prediction, best_model, comparison_data = select_best_model(
+                prediction_rf, prediction_gb, year
+            )
+            
+            predictions[year] = best_prediction
+            model_comparisons[year] = comparison_data
+            selected_models[year] = best_model
+
+            # Materialize for plotting and area calculation
+            pred_np = _materialize_da_to_numpy(best_prediction.Predictions)
+            if pred_np is None:
+                if status_callback:
+                    status_callback(f"Could not materialize predictions for year {year}. Skipping.")
+                continue
+
+            # Ensure pred_np is 2D
+            if pred_np.ndim == 0:
+                pred_np = np.array([[pred_np]])
+            elif pred_np.ndim == 1:
+                pred_np = pred_np.reshape(-1, 1)
+            elif pred_np.ndim > 2:
+                pred_np = np.squeeze(pred_np)
+                
+            if pred_np.ndim != 2:
+                continue
+
+            # Create copy for plotting
+            prediction_for_plot = best_prediction.copy(deep=False)
+            try:
+                orig_dims = tuple(best_prediction.Predictions.dims) if hasattr(best_prediction.Predictions, 'dims') else ('y', 'x')
+                coords = {}
+                
+                if 'y' in orig_dims:
+                    try:
+                        y_coord = best_prediction.Predictions.coords.get('y', None)
+                        if y_coord is not None:
+                            y_np = _materialize_da_to_numpy(y_coord)
+                            if y_np is not None and len(y_np) == pred_np.shape[0]:
+                                coords['y'] = ('y', y_np)
+                    except Exception:
+                        pass
+                    if 'y' not in coords:
+                        coords['y'] = ('y', np.arange(pred_np.shape[0]))
+                        
+                if 'x' in orig_dims:
+                    try:
+                        x_coord = best_prediction.Predictions.coords.get('x', None)
+                        if x_coord is not None:
+                            x_np = _materialize_da_to_numpy(x_coord)
+                            if x_np is not None and len(x_np) == pred_np.shape[1]:
+                                coords['x'] = ('x', x_np)
+                    except Exception:
+                        pass
+                    if 'x' not in coords:
+                        coords['x'] = ('x', np.arange(pred_np.shape[1]))
+
+                da_pred_numpy = xr.DataArray(pred_np, dims=orig_dims, coords=coords)
+                prediction_for_plot = prediction_for_plot.assign(Predictions=da_pred_numpy)
+            except Exception as e:
+                _LOG.warning("Failed to create numpy-backed DataArray: %s", e)
+                prediction_for_plot = best_prediction.compute() if hasattr(best_prediction, 'compute') else best_prediction
+
+            # Compute areas
+            if status_callback:
+                status_callback(f"Computing areas for year {year}...")
+
+            classes = pred_np.ravel()
+            valid_mask = classes >= 0
+            valid_classes = classes[valid_mask]
+            
+            if len(valid_classes) == 0:
+                areas_per_class[year] = {label: 0.0 for label in class_labels}
+            else:
+                valid_classes_int = valid_classes.astype(int)
+                class_counts = np.bincount(valid_classes_int, minlength=len(class_labels))
+                total_pixels = np.sum(class_counts)
+            
+                areas_per_class[year] = {}
+                for i, label in enumerate(class_labels):
+                    if i < len(class_counts):
+                        areas_per_class[year][label] = (class_counts[i] / total_pixels) * 100.0
+                    else:
+                        areas_per_class[year][label] = 0.0
+
+            # Generate plot
+            if status_callback:
+                status_callback(f"Plotting results for year {year}...")
+            
+            # Add model info to the plot title
+            fig = plot_year_result(prediction_for_plot, year, model_used=best_model)
+            figures.append(fig)
+
+            if status_callback:
+                status_callback(f"Completed year {year} with {best_model}.")
+
+        except Exception as e:
+            _LOG.exception("Error during dual-model processing year %s: %s", year, e)
+            if status_callback:
+                status_callback(f"Error processing year {year}: {str(e)}")
+            raise RuntimeError(f"Year {year} processing failed: {str(e)}")
+
+    # Generate summary plots (same as before but with model info)
+    if status_callback:
+        status_callback("Generating summary plots...")
+    
+    # Area summary plot
+    df_areas = pd.DataFrame(areas_per_class).T.fillna(0)
+    fig_area, ax = plt.subplots(figsize=(14, 8), dpi=150)
+    df_areas.plot(kind='bar', stacked=True, ax=ax,
+                color=[class_colors[label] for label in class_labels])
+    
+    # Add model information to the plot
+    model_info = "\n".join([f"{year}: {selected_models[year]}" for year in years if year in selected_models])
+    ax.text(1.02, 0.98, f"Models Used:\n{model_info}", 
+            transform=ax.transAxes, verticalalignment='top', fontsize=10,
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+    
+    ax.set_title('Land Cover Area Over Time (Auto-Selected Models)', fontsize=16, fontweight='bold')
+    ax.set_xlabel('Year', fontsize=14)
+    ax.set_ylabel('Area (%)', fontsize=14)
+    ax.legend(title='Classes', bbox_to_anchor=(1.05, 1), fontsize=12)
+    plt.tight_layout()
+    figures.append(fig_area)
+
+    # Difference plot for multiple years
+    if len(years) > 1:
+        df_diff = df_areas.diff().dropna()
+        if not df_diff.empty:
+            fig_diff, ax = plt.subplots(figsize=(12, 8))
+            df_diff.plot(kind='bar', ax=ax, color=[class_colors[label] for label in class_labels])
+            ax.set_title('Yearly Area Changes (Auto-Selected Models)')
+            ax.set_xlabel('Year')
+            ax.set_ylabel('Area Change (%)')
+            ax.legend(title='Classes', bbox_to_anchor=(1.05, 1))
+            plt.tight_layout()
+            figures.append(fig_diff)
+
+    # Transition matrices
+    if len(years) > 1:
+        for i in range(len(years) - 1):
+            year_from = years[i]
+            year_to = years[i + 1]
+            if year_from not in predictions or year_to not in predictions:
+                continue
+            if status_callback:
+                status_callback(f"Computing transitions: {year_from} → {year_to}...")
+
+            pred1_np = _materialize_da_to_numpy(predictions[year_from].Predictions)
+            pred2_np = _materialize_da_to_numpy(predictions[year_to].Predictions)
+            if pred1_np is None or pred2_np is None:
+                continue
+
+            pred1_np = np.squeeze(pred1_np)
+            pred2_np = np.squeeze(pred2_np)
+            
+            if pred1_np.size == 0 or pred2_np.size == 0:
+                continue
+                
+            try:
+                matrix = compute_transition_matrix(
+                    xr.Dataset({'Predictions': (('y', 'x'), pred1_np)}),
+                    xr.Dataset({'Predictions': (('y', 'x'), pred2_np)}),
+                    class_labels
+                )
+                norm_matrix = normalize_transition_matrix(matrix)
+                fig_trans = plot_transition_matrix(norm_matrix, class_labels, year_from, year_to)
+                transition_matrices[f"{year_from}-{year_to}"] = norm_matrix
+                figures.append(fig_trans)
+            except Exception as e:
+                _LOG.warning("Failed to compute transition for %s-%s: %s", year_from, year_to, e)
+
+    if status_callback:
+        status_callback("Dual-model processing complete.")
+
+    return predictions, figures, areas_per_class, transition_matrices, model_comparisons
+
+
 
 import datetime
 from matplotlib.backends.backend_pdf import PdfPages
@@ -1527,14 +1885,21 @@ def generate_analysis_text(areas_per_class, transition_matrices, years, lat, lon
     
     return "\n".join(analysis_lines)
 
-def create_prediction_pdf(predictions, figures, areas_per_class, transition_matrices, lat, lon, years):
-    """Create PDF report with all prediction details and plots"""
-
+def create_prediction_pdf(predictions, figures, areas_per_class, transition_matrices, lat, lon, years, model_comparisons=None):
+    """Create PDF report with model comparison when Both models were used"""
+    
     from datetime import datetime, timedelta, timezone
     
     sa_time = datetime.now(timezone.utc) + timedelta(hours=2)
     timestamp = sa_time.strftime("%Y%m%d_%H%M%S")
     pdf_filename = f"landcover_report_{timestamp}.pdf"
+
+    # Determine if both models were used
+    both_models_used = any(
+        'rf_score' in comp and 'gb_score' in comp 
+        for comp in model_comparisons.values() 
+        if isinstance(comp, dict)
+    )
 
     if isinstance(years, int) or len(years) == 1:
         report_mode = "Single-Year"
@@ -1555,22 +1920,79 @@ def create_prediction_pdf(predictions, figures, areas_per_class, transition_matr
             f"Location: Latitude {lat:.4f}, Longitude {lon:.4f}",
             f"Report Mode: {report_mode}",
             f"Years Analyzed: {', '.join(map(str, years))}",
-            "",
-            "Report Contents:",
-            "• Automated land cover analysis",
-            "• Classification maps for each year", 
-            "• True color satellite imagery",
-            "• Probability maps",
-            "• Area change analysis",
-            "• Transition matrices"
         ]
+        
+        # Add model information
+        if both_models_used:
+            title_text.extend([
+                "",
+                "MODEL STRATEGY: Dual-Model Auto-Selection",
+                "• Both Random Forest and Gradient Boosting models were run",
+                "• Best model was automatically selected for each year",
+                "• Selection based on confidence scores and quality metrics"
+            ])
+        else:
+            # Get the single model used
+            model_used = next((comp.get('selected_model', 'Unknown') for comp in model_comparisons.values() if comp), 'Unknown')
+            title_text.extend([
+                "",
+                f"MODEL STRATEGY: Single Model ({model_used})"
+            ])
         
         plt.text(0.1, 0.9, "\n".join(title_text), transform=plt.gca().transAxes, 
                 fontsize=14, verticalalignment='top', fontweight='bold')
         pdf.savefig()
         plt.close()
         
-        # Page 2: Automated analysis
+        # Page 2: Model Performance Comparison (only if both models were used)
+        if both_models_used:
+            plt.figure(figsize=(11, 8.5))
+            plt.axis('off')
+            
+            # Create model comparison table
+            comparison_text = ["MODEL PERFORMANCE COMPARISON", "=" * 40, ""]
+            
+            for year in sorted(years):
+                if year in model_comparisons and isinstance(model_comparisons[year], dict):
+                    comp = model_comparisons[year]
+                    if 'rf_score' in comp and 'gb_score' in comp:
+                        comparison_text.extend([
+                            f"Year {year}:",
+                            f"  Selected Model: {comp['selected_model']}",
+                            f"  Reason: {comp.get('selection_reason', 'N/A')}",
+                            f"  RF Score: {comp['rf_score']:.4f}",
+                            f"  GB Score: {comp['gb_score']:.4f}",
+                            f"  RF Confidence: {comp.get('rf_confidence', 0):.4f}",
+                            f"  GB Confidence: {comp.get('gb_confidence', 0):.4f}",
+                            ""
+                        ])
+            
+            # Add summary statistics
+            rf_wins = sum(1 for year in years 
+                         if year in model_comparisons 
+                         and model_comparisons[year].get('selected_model') == 'Random Forest')
+            gb_wins = sum(1 for year in years 
+                         if year in model_comparisons 
+                         and model_comparisons[year].get('selected_model') == 'Gradient Boosting')
+            
+            comparison_text.extend([
+                "SUMMARY:",
+                f"Random Forest was best for {rf_wins} year(s)",
+                f"Gradient Boosting was best for {gb_wins} year(s)",
+                "",
+                "Selection Criteria:",
+                "• Model confidence scores",
+                "• Prediction consistency", 
+                "• Class distribution quality",
+                "• High-confidence pixel ratio"
+            ])
+            
+            plt.text(0.1, 0.95, "\n".join(comparison_text), transform=plt.gca().transAxes,
+                    fontsize=11, verticalalignment='top', fontfamily='monospace')
+            pdf.savefig()
+            plt.close()
+        
+        # Page 3: Automated analysis (existing code)
         analysis_text = generate_analysis_text(areas_per_class, transition_matrices, years, lat, lon)
         
         plt.figure(figsize=(11, 8.5))
@@ -1584,7 +2006,6 @@ def create_prediction_pdf(predictions, figures, areas_per_class, transition_matr
         
         # Add all the figures
         for i, fig in enumerate(figures):
-            # Preserve original Streamlit figure sizes and quality
             temp_path = f"temp_fig_{i}.png"
             fig.savefig(temp_path, dpi=300, bbox_inches='tight', pad_inches=0.2)
             img = plt.imread(temp_path)
@@ -1595,49 +2016,10 @@ def create_prediction_pdf(predictions, figures, areas_per_class, transition_matr
             plt.close()
             os.remove(temp_path)
             
-        # Page 3: Model Information and Performance
-        plt.figure(figsize=(11, 8.5))
-        plt.axis('off')
-        
-        # Detect model info
-        model_used = "Random Forest" if "rf" in str(predictions).lower() else "Gradient Boosting"
-        sensor_type = "Landsat" if min(years) < 2017 else "Sentinel-2"
-        
-        plt.text(0.1, 0.95, "MODEL INFORMATION", transform=plt.gca().transAxes,
-                 fontsize=16, fontweight='bold')
-        info_text = (
-            f"Model Used: {model_used}\n"
-            f"Sensor Type: {sensor_type}\n"
-            f"Years Analyzed: {', '.join(map(str, years))}\n"
-            "\n"
-            "This section shows how the chosen model performed on validation data."
-        )
-        plt.text(0.1, 0.8, info_text, transform=plt.gca().transAxes,
-                 fontsize=11, verticalalignment='top')
-        pdf.savefig()
-        plt.close()
-        
-        # Model performance plot (Confusion Matrix)
-        from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
-        
-        try:
-            y_true = np.random.randint(0, len(class_labels), 100)
-            y_pred = y_true.copy()
-            y_pred[np.random.choice(100, 10, replace=False)] = np.random.randint(0, len(class_labels), 10)
-            cm = confusion_matrix(y_true, y_pred)
-            disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=class_labels)
-            fig, ax = plt.subplots(figsize=(7, 6))
-            disp.plot(ax=ax, cmap='Blues', colorbar=False)
-            ax.set_title("Model Validation Performance", fontsize=14, fontweight='bold')
-            pdf.savefig(fig, bbox_inches='tight', dpi=300)
-            plt.close(fig)
-        except Exception as e:
-            print("Performance plot failed:", e)
-        
-                
         # Final page with summary
         plt.figure(figsize=(11, 8.5))
         plt.axis('off')
+        
         summary_text = [
             "REPORT SUMMARY",
             "",
@@ -1649,6 +2031,15 @@ def create_prediction_pdf(predictions, figures, areas_per_class, transition_matr
             "✓ Area change analysis over time",
             "✓ Land cover transition analysis",
             "✓ Automated change detection",
+        ]
+        
+        if both_models_used:
+            summary_text.extend([
+                "✓ Dual-model performance comparison",
+                "✓ Automated model selection per year"
+            ])
+        
+        summary_text.extend([
             "",
             "Data Sources:",
             "- Landsat 5-9 (1984-2012, 2013+)",
@@ -1656,7 +2047,7 @@ def create_prediction_pdf(predictions, figures, areas_per_class, transition_matr
             "- Digital Earth Africa",
             "",
             f"Generated on: {sa_time.strftime('%Y-%m-%d %H:%M:%S')} (SAST)"
-        ]
+        ])
         
         plt.text(0.1, 0.9, "\n".join(summary_text), transform=plt.gca().transAxes, 
                 fontsize=12, verticalalignment='top')
