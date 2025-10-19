@@ -283,13 +283,22 @@ def main_application():
     st.write("Select Machine Learning Model")
     # Use user's default model preference
     user_default_model = st.session_state.user.get('default_model', 'Random Forest')
+    
+    # Map model names to indices
+    model_options = ["Random Forest", "Gradient Boosting", "Both (Auto-Select Best)"]
     default_index = 0 if user_default_model == "Random Forest" else 1
+    if user_default_model == "Gradient Boosting":
+        default_index = 1
+    elif user_default_model == "Both (Auto-Select Best)":
+        default_index = 2
     
     model_type = st.selectbox(
         "Choose classification model:",
-        ["Random Forest", "Gradient Boosting"],
+        model_options,
         index=default_index,
-        help="Random Forest: Generally more robust and requires less tuning. Gradient Boosting: Can achieve higher accuracy but may be more sensitive to parameters.",
+        help="""Random Forest: Generally more robust and requires less tuning. 
+        Gradient Boosting: Can achieve higher accuracy but may be more sensitive to parameters.
+        Both: Runs both models and automatically selects the best performing one for each year.""",
         key="model_selectbox"
     )
 
