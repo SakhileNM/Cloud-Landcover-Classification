@@ -207,27 +207,78 @@ def show_auth0_login():
     st.markdown("""
     <style>
     .login-container {
-        max-width: 400px;
+        max-width: 800px;
         margin: 0 auto;
         padding: 2rem;
-        border: 1px solid #ddd;
-        border-radius: 10px;
+    }
+    .google-login-btn {
+        display: block;
+        margin: 2rem auto;
         background: white;
-        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        color: #4285F4;
+        border: 2px solid #4285F4;
+        border-radius: 25px;
+        padding: 12px 30px;
+        font-size: 16px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        text-align: center;
+        width: 220px;
+        text-decoration: none;
+    }
+    .google-login-btn:hover {
+        background: #4285F4;
+        color: white;
+    }
+    .project-description {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        padding: 2rem;
+        border-radius: 15px;
+        margin: 2rem 0;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+    }
+    .project-title {
+        font-size: 1.5rem;
+        font-weight: bold;
+        margin-bottom: 1rem;
+        text-align: center;
     }
     </style>
     """, unsafe_allow_html=True)
     
     with st.container():
         st.markdown('<div class="login-container">', unsafe_allow_html=True)
-        st.subheader("Sign In")
-        st.write("Access the Geospatial Landcover Classification Platform")
         
+        # Project description
+        st.markdown("""
+        <div class="project-description">
+            <div class="project-title">Geospatial Landcover Classification Platform</div>
+            <p>This research project was developed by Sakhile Mkhize during his BEngTech Honours in Computer Engineering at CPUT. The research demonstrates how complex geospatial analysis tasks can be transformed into accessible, efficient processes through modern machine learning and cloud technologies.</p>
+            
+            <p>The platform features dual machine learning models - Random Forest and Gradient Boosting - trained on Western Cape regional data. Leveraging Digital Earth Africa's STAC dataset and deployed via Docker on Oracle Cloud infrastructure, the application enables stakeholders to accurately classify landcover using both Landsat and Sentinel satellite imagery from 1995 to 2023.</p>
+            
+            <p>Users can select specific locations, choose between individual models or automated model selection, analyze multiple years, and receive comprehensive results via email notifications or downloadable PDF reports stored locally or in Google Drive.</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Centered Google login button
         auth_url = st.session_state.auth0_service.get_auth_url(include_drive_scope=False)
-        
-        if st.button("Sign in with Auth0", key="auth0_login_btn"):
-            st.markdown(f'<meta http-equiv="refresh" content="0; url={auth_url}">', unsafe_allow_html=True)
-            st.success("Redirecting to Auth0...")
+        google_button_html = f'''
+        <a href="{auth_url}" class="google-login-btn" style="text-decoration: none;">
+            <div style="display: flex; align-items: center; justify-content: center; gap: 10px;">
+                <svg width="18" height="18" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+                    <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+                    <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                    <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
+                    <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+                </svg>
+                Login with Google
+            </div>
+        </a>
+        '''
+        st.markdown(google_button_html, unsafe_allow_html=True)
         
         st.markdown('</div>', unsafe_allow_html=True)
 
