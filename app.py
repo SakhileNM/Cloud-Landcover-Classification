@@ -324,7 +324,7 @@ def main_application():
                     update_status(f"Starting predictions using {model_type} model...")
                     
                     # Run predictions
-                    predictions, figures, areas_per_class, transition_matrices = predict_for_years(
+                    predictions, figures, areas_per_class, transition_matrices, model_comparisons = predict_for_years(
                         lat, lon, selected_years, model_type, status_callback=update_status
                     )
                     
@@ -335,7 +335,8 @@ def main_application():
                             'predictions': len(predictions),
                             'figures': len(figures),
                             'areas_per_class': areas_per_class,
-                            'transition_matrices': len(transition_matrices)
+                            'transition_matrices': len(transition_matrices),
+                            'model_comparisons': model_comparisons
                         }
                     )
                     
@@ -363,6 +364,7 @@ def main_application():
                     st.session_state.figures = figures
                     st.session_state.areas_per_class = areas_per_class
                     st.session_state.transition_matrices = transition_matrices
+                    st.session_state.model_comparisons = model_comparisons  # New
                     st.session_state.lat = lat
                     st.session_state.lon = lon
                     st.session_state.selected_years = selected_years
@@ -372,7 +374,17 @@ def main_application():
                     st.error(f"An error occurred during prediction: {str(e)}")
                     st.stop()
 
-            st.success(f"Predictions completed successfully using {model_type}!")
+            # Update the success message to show model strategy
+            if model_type == 'Both (Auto-Select Best)':
+                # Count model selections
+                rf_count = sum(1 for comp in model_comparisons.values() 
+                              if comp.get('selected_model') == 'Random Forest')
+                gb_count = sum(1 for comp in model_comparisons.values() 
+                              if comp.get('selected_model') == 'Gradient Boosting')
+                
+                st.success(f"Predictions completed! Auto-selected: RF ({rf_count} years), GB ({gb_count} years)")
+            else:
+                st.success(f"Predictions completed successfully using {model_type}!")
             
             # Display model information
             st.info(f"""
@@ -425,7 +437,8 @@ def main_application():
                             st.session_state.transition_matrices,
                             st.session_state.lat, 
                             st.session_state.lon, 
-                            st.session_state.selected_years
+                            st.session_state.selected_years,
+                            st.session_state.model_comparisons
                         )
                         
                         if pdf_path and os.path.exists(pdf_path):
