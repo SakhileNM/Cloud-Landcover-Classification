@@ -10,8 +10,8 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import json
-from pathlib import Pathf
-from device_oauth_drive import (streamlit_connect_button, build_drive_service_for_user, credentials_from_saved_token)
+from pathlib import Path
+from device_oauth_drive import streamlit_connect_button, build_drive_service_for_user, credentials_from_saved_token
 
 # Set memory limits
 try:
