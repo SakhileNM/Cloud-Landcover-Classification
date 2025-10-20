@@ -7,8 +7,11 @@ import resource
 import os
 from datetime import datetime
 import smtplib
-from email.mime.text import MIMEText  # Fixed import
-from email.mime.multipart import MIMEMultipart  # Fixed import
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+import json
+from pathlib import Pathf
+from device_oauth_drive import (streamlit_connect_button, build_drive_service_for_user, credentials_from_saved_token)
 
 # Set memory limits
 try:
@@ -23,6 +26,22 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# Downloaded device-client JSON as "device_client_secrets.json" in project root,
+_client_secret_path = Path(os.getenv("GOOGLE_DEVICE_CLIENT_SECRETS", "device_client_secrets.json"))
+if not os.getenv("GOOGLE_CLIENT_ID") and _client_secret_path.exists():
+    try:
+        jd = json.loads(_client_secret_path.read_text())
+        webcfg = jd.get("web") or jd.get("installed") or {}
+        cid = webcfg.get("client_id")
+        csec = webcfg.get("client_secret")
+        if cid:
+            os.environ["GOOGLE_CLIENT_ID"] = cid
+        if csec:
+            os.environ["GOOGLE_CLIENT_SECRET"] = csec
+    except Exception as _e:
+        # will not crash your app — optional warning for debugging
+        print("Could not read device client secrets:", _e)
 
 class EmailService:
     def __init__(self):
@@ -141,6 +160,9 @@ def main_application():
     if 'email_service' not in st.session_state:
         st.session_state.email_service = EmailService()
 
+    # === ADD: ensure token storage dir exists ===
+    os.makedirs(os.getenv("GOOGLE_CREDS_DIR", "/app/data/google_tokens"), exist_ok=True)
+
     # User welcome bar
     if st.session_state.user:
         col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
@@ -191,10 +213,30 @@ def main_application():
             else:
                 st.info("Email Notifications: Disabled")
             
-            if user.get('drive_connected'):
+            from device_oauth_drive import credentials_from_saved_token
+            
+            # If we already have a saved token for this user, mark as connected
+            if credentials_from_saved_token(user['id']):
+                st.session_state.user['drive_connected'] = True
+            
+            if st.session_state.user.get('drive_connected'):
                 st.success("Google Drive: Connected")
+                if st.button("Disconnect Google Drive", key="disconnect_drive_btn"):
+                    # Remove stored token (file used by device_oauth_drive)
+                    token_path = f"{os.getenv('GOOGLE_CREDS_DIR','/app/data/google_tokens')}/{user['id']}_google_token.json"
+                    try:
+                        if os.path.exists(token_path):
+                            os.remove(token_path)
+                        st.session_state.user['drive_connected'] = False
+                        st.success("Google Drive disconnected for your account.")
+                        st.experimental_rerun()
+                    except Exception as e:
+                        st.error(f"Disconnect failed: {e}")
             else:
-                st.info("Google Drive: Available")
+                # Show the device-flow connect UI (streamlit widget provided by device_oauth_drive)
+                streamlit_connect_button(user['id'])
+                st.info("Connect your Google Drive to save PDFs to your personal Drive (device-code flow).")
+
         
         st.markdown("---")
         st.subheader("Analysis Settings")
@@ -419,34 +461,55 @@ def main_application():
                             # Check if Google Drive is connected
                             if st.session_state.user.get('drive_connected'):
                                 # Save to Google Drive
-                                from google_drive import GoogleDriveService
-                                drive_service = GoogleDriveService()
+                                from googleapiclient.http import MediaFileUpload
+                                # Build a per-user Drive service from saved device-flow tokens
+                                drive_service = build_drive_service_for_user(st.session_state.user['id'])
                                 
-                                drive_url = drive_service.upload_file(pdf_path, file_name)
-                                
-                                if drive_url:
-                                    st.success(f"PDF report saved to Google Drive!")
-                                    st.markdown(f"[View in Google Drive]({drive_url})")
-                                    
-                                    # Also provide local download
-                                    with open(pdf_path, "rb") as pdf_file:
-                                        st.download_button(
-                                            label="Download Local Copy",
-                                            data=pdf_file,
-                                            file_name=file_name,
-                                            mime="application/pdf",
-                                            key="download_pdf_local_btn"
-                                        )
+                                if drive_service:
+                                    try:
+                                        file_metadata = {'name': file_name}
+                                        # optional: put files into a user-specific folder if you store one in user profile
+                                        folder_id = st.session_state.user.get('drive_folder_id')
+                                        if folder_id:
+                                            file_metadata['parents'] = [folder_id]
+                                        media = MediaFileUpload(pdf_path, mimetype='application/pdf', resumable=True)
+                                        uploaded = drive_service.files().create(
+                                            body=file_metadata, media_body=media, fields='id, webViewLink'
+                                        ).execute()
+                                        drive_url = uploaded.get('webViewLink') or f"https://drive.google.com/file/d/{uploaded.get('id')}/view"
+                                        st.success("PDF report saved to your Google Drive!")
+                                        st.markdown(f"[View in Google Drive]({drive_url})")
+                                        # local download offered as well
+                                        with open(pdf_path, "rb") as pdf_file:
+                                            st.download_button(
+                                                label="Download Local Copy",
+                                                data=pdf_file,
+                                                file_name=file_name,
+                                                mime="application/pdf",
+                                                key="download_pdf_local_btn"
+                                            )
+                                    except Exception as e:
+                                        st.warning(f"Google Drive upload failed: {e}")
+                                        # fallback local download
+                                        with open(pdf_path, "rb") as pdf_file:
+                                            st.download_button(
+                                                label="Download PDF Report",
+                                                data=pdf_file,
+                                                file_name=file_name,
+                                                mime="application/pdf",
+                                                key="download_pdf_fallback_btn"
+                                            )
                                 else:
-                                    st.warning("Google Drive upload failed. Downloading locally.")
+                                    st.warning("No Google Drive credentials found — please click 'Connect Google Drive' in the sidebar first.")
                                     with open(pdf_path, "rb") as pdf_file:
                                         st.download_button(
                                             label="Download PDF Report",
                                             data=pdf_file,
                                             file_name=file_name,
                                             mime="application/pdf",
-                                            key="download_pdf_fallback_btn"
+                                            key="download_pdf_btn"
                                         )
+
                             else:
                                 # Just local download
                                 with open(pdf_path, "rb") as pdf_file:
