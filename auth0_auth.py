@@ -269,6 +269,10 @@ def show_auth0_login():
         
         # Centered Google login button
         auth_url = st.session_state.auth0_service.get_auth_url(include_drive_scope=False)
+
+        st.markdown("**DEBUG auth_url (Auth0 → Google request):**")
+        st.code(auth_url)
+
         google_button_html = f'''
         <a href="{auth_url}" class="google-login-btn" style="text-decoration: none;">
             <div style="display: flex; align-items: center; justify-content: center; gap: 10px;">
