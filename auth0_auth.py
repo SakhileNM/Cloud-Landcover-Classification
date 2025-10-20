@@ -8,7 +8,13 @@ from dotenv import load_dotenv
 import sqlite3
 from contextlib import contextmanager
 import hashlib
-from google_drive_integration import GoogleDriveService, setup_google_drive_credentials
+# Use device-code flow helpers instead of web redirect flow
+from device_oauth_drive import (
+    streamlit_connect_button,
+    build_drive_service_for_user,
+    credentials_from_saved_token
+)
+
 
 load_dotenv()
 
@@ -30,11 +36,7 @@ class Auth0Service:
         self.client_id = os.getenv("AUTH0_CLIENT_ID")
         self.client_secret = os.getenv("AUTH0_CLIENT_SECRET")
         self.redirect_uri = os.getenv("AUTH0_REDIRECT_URI", "http://localhost:8501")
-        self.google_drive_service = GoogleDriveService()
         self.init_database()
-        
-        # Setup Google Drive credentials
-        setup_google_drive_credentials()
 
     def init_database(self):
         """Initialize SQLite database for user preferences and history"""
@@ -125,11 +127,13 @@ class Auth0Service:
                 result = cursor.fetchone()
                 if result:
                     return {
-                        'default_model': result[1],
-                        'auto_save': bool(result[2]),
-                        'email_notifications': bool(result[3]),
-                        'save_location': result[4],
-                        'drive_connected': bool(result[5])
+                        # result columns correspond to the SELECT order:
+                        # default_model (0), auto_save (1), email_notifications (2), save_location (3), drive_connected (4)
+                        'default_model': result[0],
+                        'auto_save': bool(result[1]),
+                        'email_notifications': bool(result[2]),
+                        'save_location': result[3],
+                        'drive_connected': bool(result[4])
                     }
         except Exception as e:
             st.error(f"Error loading preferences: {e}")
@@ -284,17 +288,12 @@ def show_auth0_login():
 
 def handle_auth0_callback():
     """Handle Auth0 callback after login"""
-    # First handle Google Drive OAuth callback if present
-    if 'google_drive_service' not in st.session_state:
-        st.session_state.google_drive_service = GoogleDriveService()
     
-    st.session_state.google_drive_service.handle_oauth_callback()
-    
-    # Then handle Auth0 callback
+    # Handle Auth0 callback
     query_params = st.query_params
     
     if 'code' in query_params and 'google_oauth_state' not in st.session_state:
-        code = query_params['code']
+        code = query_params.get('code', [None])[0]
         
         if 'auth0_service' not in st.session_state:
             st.session_state.auth0_service = Auth0Service()
@@ -323,8 +322,9 @@ def handle_auth0_callback():
                     }
                     auth_service.save_user_preferences(user_id, preferences)
                 
-                # Check if Google Drive is connected
-                drive_connected = os.path.exists(f'/app/data/credentials/{user_id}_google_drive_token.json')
+                # Check if Google Drive device-flow token exists (device_oauth_drive default dir)
+                creds_dir = os.getenv("GOOGLE_CREDS_DIR", "/app/data/google_tokens")
+                drive_connected = os.path.exists(os.path.join(creds_dir, f"{user_id}_google_token.json"))
                 preferences['drive_connected'] = drive_connected
                 
                 # Store user in session
@@ -355,7 +355,6 @@ def handle_auth0_callback():
 def show_auth0_profile():
     user = st.session_state.user
     auth_service = st.session_state.auth0_service
-    drive_service = st.session_state.google_drive_service
     
     st.title("User Profile & Settings")
     
@@ -448,35 +447,51 @@ def show_auth0_profile():
     if user.get('drive_connected'):
         st.success("Google Drive is connected to your account")
         
-        # Show recent files
-        st.write("**Recent Files in Google Drive:**")
-        files = drive_service.list_user_files(user['id'])
-        if files:
-            for file in files:
-                st.write(f"- [{file['name']}]({file['webViewLink']}) ({file['createdTime'][:10]})")
-        else:
-            st.info("No files found in Google Drive")
-        
+        # Show recent files using device-flow saved credentials (build Drive service)
+        st.write("**Recent Files in Google Drive (most recent 10):**")
+        try:
+            drive_service = build_drive_service_for_user(user['id'])
+            if drive_service:
+                resp = drive_service.files().list(pageSize=10, fields="files(id,name,webViewLink,createdTime)").execute()
+                files = resp.get('files', [])
+                if files:
+                    for file in files:
+                        created = file.get('createdTime', '')[:10]
+                        st.write(f"- [{file['name']}]({file.get('webViewLink')}) ({created})")
+                else:
+                    st.info("No files found in Google Drive")
+            else:
+                st.warning("No Google Drive credentials found for this account.")
+        except Exception as e:
+            st.error(f"Could not fetch Drive files: {e}")
+    
         col1, col2 = st.columns(2)
         with col1:
             if st.button("Refresh File List", key="refresh_drive_btn"):
-                st.rerun()
+                st.experimental_rerun()
         
         with col2:
             if st.button("Disconnect Google Drive", key="disconnect_drive_btn"):
-                if drive_service.disconnect_drive(user['id']):
+                # delete the device-flow token file and update prefs
+                creds_dir = os.getenv("GOOGLE_CREDS_DIR", "/app/data/google_tokens")
+                token_path = os.path.join(creds_dir, f"{user['id']}_google_token.json")
+                try:
+                    if os.path.exists(token_path):
+                        os.remove(token_path)
                     user['drive_connected'] = False
                     st.session_state.user = user
                     auth_service.save_user_preferences(user['id'], user)
-                    st.rerun()
+                    st.success("Google Drive disconnected for your account.")
+                    st.experimental_rerun()
+                except Exception as e:
+                    st.error(f"Disconnect failed: {e}")
+
     else:
         st.info("Connect Google Drive to automatically save your analysis reports and access them from anywhere.")
-        
-        if st.button("Connect Google Drive", key="connect_drive_btn"):
-            if drive_service.authenticate(user['id']):
-                st.success("Google Drive authentication initiated!")
-            else:
-                st.info("Please complete the Google authentication in the new window.")
+    
+        # Use device-flow connect UI (no redirect required)
+        streamlit_connect_button(user['id'])
+
     
     st.markdown("---")
     
