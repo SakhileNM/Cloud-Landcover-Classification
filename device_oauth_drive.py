@@ -1,4 +1,3 @@
-# device_oauth_drive.py
 import os
 import time
 import requests
@@ -7,9 +6,21 @@ import streamlit as st
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
-# Config from env
-GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
-GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")  # optional for device flow but include if your client has one
+# Load client secrets from file instead of environment variables
+try:
+    with open('device_client_secrets.json', 'r') as f:
+        secrets = json.load(f)['installed']
+        GOOGLE_CLIENT_ID = secrets['client_id']
+        GOOGLE_CLIENT_SECRET = secrets['client_secret']
+except FileNotFoundError:
+    st.error("device_client_secrets.json file not found")
+    GOOGLE_CLIENT_ID = None
+    GOOGLE_CLIENT_SECRET = None
+except Exception as e:
+    st.error(f"Error loading client secrets: {e}")
+    GOOGLE_CLIENT_ID = None
+    GOOGLE_CLIENT_SECRET = None
+
 SCOPES = "openid email profile https://www.googleapis.com/auth/drive.file"
 DEVICE_CODE_URL = "https://oauth2.googleapis.com/device/code"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -34,7 +45,8 @@ def _load_token_for_user(user_id):
 def start_device_flow_for_user(user_id):
     """Kick off device authorization. Returns dict containing user_code, verification_url, device_code, interval, expires_in"""
     if not GOOGLE_CLIENT_ID:
-        raise RuntimeError("Set GOOGLE_CLIENT_ID env var")
+        raise RuntimeError("Could not load Google Client ID from device_client_secrets.json")
+    
     data = {
         "client_id": GOOGLE_CLIENT_ID,
         "scope": SCOPES
@@ -118,21 +130,34 @@ def build_drive_service_for_user(user_id):
 
 # Example Streamlit wiring
 def streamlit_connect_button(user_id):
-    st.write("Connect Google Drive (device flow) — no HTTPS required on server")
+    st.write("Connect Google Drive")
+    
+    # Check if client secrets are loaded
+    if not GOOGLE_CLIENT_ID:
+        st.error("Google Drive configuration error: Could not load client secrets from device_client_secrets.json")
+        return
+    
     if st.button("Start Google Device Authorization"):
-        info = start_device_flow_for_user(user_id)
-        st.session_state[f"visible_device_info_{user_id}"] = info
-        st.experimental_rerun()
+        try:
+            info = start_device_flow_for_user(user_id)
+            st.session_state[f"visible_device_info_{user_id}"] = info
+            st.rerun()
+        except Exception as e:
+            st.error(f"Failed to start device flow: {e}")
 
     device_info = st.session_state.get(f"visible_device_info_{user_id}")
     if device_info:
         st.markdown("**Open this link on your phone or desktop and enter the code:**")
         st.code(device_info["user_code"])
         st.markdown(f"[Open verification page]({device_info['verification_url']}) (opens in a new tab)")
+        
         if st.button("Poll for token now"):
             try:
                 tok = poll_device_token(user_id)
                 st.success("Connected to Google Drive")
-                st.json(tok)
+                # Update user session state
+                if 'user' in st.session_state:
+                    st.session_state.user['drive_connected'] = True
+                st.rerun()
             except Exception as e:
                 st.error(f"Error polling token: {e}")
