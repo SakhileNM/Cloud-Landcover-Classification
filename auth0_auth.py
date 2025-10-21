@@ -270,16 +270,6 @@ def show_auth0_login():
         # Centered Google login button
         auth_url = st.session_state.auth0_service.get_auth_url(include_drive_scope=False)
 
-        st.markdown("**DEBUG auth_url (Auth0 → Google request):**")
-        st.code(auth_url)
-
-        # Add debug info
-        st.write("**Current session state:**", {
-            'authenticated': st.session_state.get('authenticated', False),
-            'user': bool(st.session_state.get('user')),
-            'query_params': dict(st.query_params)
-        })
-
         google_button_html = f'''
         <a href="{auth_url}" class="google-login-btn" style="text-decoration: none;">
             <div style="display: flex; align-items: center; justify-content: center; gap: 10px;">
@@ -303,17 +293,12 @@ def handle_auth0_callback():
     # Handle Auth0 callback
     query_params = st.query_params
     
-    # Debug: show what we received
-    st.write("DEBUG: Query params received:", dict(query_params))
-    
     if 'code' in query_params:
         code = query_params['code']
         
         # If code is a list, take the first element
         if isinstance(code, list):
             code = code[0]
-            
-        st.write(f"DEBUG: Processing Auth0 callback with code: {code[:20]}...")
         
         if 'auth0_service' not in st.session_state:
             st.session_state.auth0_service = Auth0Service()
@@ -328,7 +313,6 @@ def handle_auth0_callback():
             user_info = auth_service.get_user_info(tokens['access_token'])
             
             if user_info:
-                st.write(f"DEBUG: User info received for: {user_info.get('email')}")
                 # Load or create user preferences
                 user_id = user_info['sub']
                 preferences = auth_service.get_user_preferences(user_id)
@@ -373,12 +357,6 @@ def handle_auth0_callback():
                 st.success(f"Welcome {user_info.get('name', user_info['email'])}!")
                 st.query_params.clear()
                 st.rerun()
-            else:
-                st.error("DEBUG: Failed to get user info from Auth0")
-        else:
-            st.error("DEBUG: Token exchange failed")
-    else:
-        st.write("DEBUG: No code in query params or already processed")
 
 def show_auth0_profile():
     user = st.session_state.user
