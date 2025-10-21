@@ -21,7 +21,7 @@ except Exception as e:
     GOOGLE_CLIENT_ID = None
     GOOGLE_CLIENT_SECRET = None
 
-SCOPES = "openid email profile https://www.googleapis.com/auth/drive.file"
+SCOPES = "https://www.googleapis.com/auth/drive.file"
 DEVICE_CODE_URL = "https://oauth2.googleapis.com/device/code"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 
