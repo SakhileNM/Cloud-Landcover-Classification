@@ -58,7 +58,7 @@ class EmailService:
         
         try:
             message = MIMEMultipart("alternative")  # Fixed class name
-            message["Subject"] = "Analysis Completed - Geospatial Platform"
+            message["Subject"] = "Analysis Completed - Geospatial Landcover Classification Platform"
             message["From"] = self.from_email
             message["To"] = user_email
             
@@ -79,13 +79,13 @@ class EmailService:
                 
                 <p>You can view the results by logging into the platform.</p>
                 
-                <p>Best regards,<br>
-                Geospatial Classification Team</p>
+                <p>Develope regards,<br>
+                Sakhile</p>
               </body>
             </html>
             """
             
-            message.attach(MIMEText(html, "html"))  # Fixed class name
+            message.attach(MIMEText(html, "html"))
             
             with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
                 server.starttls()
@@ -410,16 +410,14 @@ def main_application():
             """)
 
             st.subheader("Per-Year Results")
-            # Get the years that were actually processed (in chronological order)
-            processed_years = sorted(st.session_state.predictions.keys())
+            # Display figures in chronological order (oldest to newest)
+            # Use the original figures list but sort the years for labeling
+            sorted_years = sorted(st.session_state.selected_years)
             
-            # Display figures in chronological order
-            for year in processed_years:
-                # Find the index of this year in the processed years list
-                year_index = processed_years.index(year)
-                if year_index < len(st.session_state.figures):
+            for i, year in enumerate(sorted_years):
+                if i < len(st.session_state.figures):
                     st.write(f"### {year} Results")
-                    st.pyplot(st.session_state.figures[year_index])
+                    st.pyplot(st.session_state.figures[i])
 
             st.subheader("Class Distribution Table")
             import pandas as pd
