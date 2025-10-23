@@ -410,12 +410,16 @@ def main_application():
             """)
 
             st.subheader("Per-Year Results")
-            # Display figures in chronological order (oldest to newest)
-            sorted_years = sorted(st.session_state.selected_years)
-            for i, year in enumerate(sorted_years):
-                if i < len(st.session_state.figures):
+            # Get the years that were actually processed (in chronological order)
+            processed_years = sorted(st.session_state.predictions.keys())
+            
+            # Display figures in chronological order
+            for year in processed_years:
+                # Find the index of this year in the processed years list
+                year_index = processed_years.index(year)
+                if year_index < len(st.session_state.figures):
                     st.write(f"### {year} Results")
-                    st.pyplot(st.session_state.figures[i])
+                    st.pyplot(st.session_state.figures[year_index])
 
             st.subheader("Class Distribution Table")
             import pandas as pd
