@@ -12,6 +12,7 @@ from email.mime.multipart import MIMEMultipart
 import json
 from pathlib import Path
 from device_oauth_drive import streamlit_connect_button, build_drive_service_for_user, credentials_from_saved_token
+import base64
 
 # Set memory limits
 try:
@@ -26,6 +27,11 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+def get_base64_of_bin_file(bin_file):
+    with open(bin_file, 'rb') as f:
+        data = f.read()
+    return base64.b64encode(data).decode()
 
 # Downloaded device-client JSON as "device_client_secrets.json" in project root,
 _client_secret_path = Path(os.getenv("GOOGLE_DEVICE_CLIENT_SECRETS", "device_client_secrets.json"))
