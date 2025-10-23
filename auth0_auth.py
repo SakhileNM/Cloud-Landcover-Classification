@@ -262,24 +262,6 @@ def show_auth0_login():
         background-position: center;
         background-attachment: fixed;
     }
-    
-    /* Optional: Add overlay for better readability */
-    .stApp::before {
-        content: '';
-        position: fixed;
-        top: 0;
-        left: 0;
-        right: 0;
-        bottom: 0;
-        background: rgba(255, 255, 255, 0.7);
-        z-index: 1;
-    }
-    
-    /* Ensure content stays above overlay */
-    .main .block-container {
-        position: relative;
-        z-index: 2;
-    }
     </style>
     """, unsafe_allow_html=True)
     
