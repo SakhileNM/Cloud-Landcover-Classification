@@ -14,7 +14,6 @@ from device_oauth_drive import (
     build_drive_service_for_user,
     credentials_from_saved_token
 )
-import base64
 
 load_dotenv()
 
@@ -213,18 +212,9 @@ def get_base64_of_bin_file(bin_file):
 def show_auth0_login():
     if 'auth0_service' not in st.session_state:
         st.session_state.auth0_service = Auth0Service()
-        
-    img_path = 'images/Gemini_Generated_Image_pcdid5pcdid5pcdi.png"'
-    b64_background = get_base64_of_bin_file(img_path)
     
     st.markdown("""
     <style>
-    .stApp {
-        background-image: url("data:image/jpg;base64,{b64_background}");
-        background-size: cover;
-        background-position: center;
-        background-attachment: fixed;
-    }
     .login-container {
         max-width: 800px;
         margin: 0 auto;
@@ -263,6 +253,32 @@ def show_auth0_login():
         font-weight: bold;
         margin-bottom: 1rem;
         text-align: center;
+    }
+    
+    /* Background image styling */
+    .stApp {
+        background-image: url('https://images.unsplash.com/photo-1506318137071-a8e063b4bec0?ixlib=rb-4.0.3&ixid=MnwxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8&auto=format&fit=crop&w=2093&q=80');
+        background-size: cover;
+        background-position: center;
+        background-attachment: fixed;
+    }
+    
+    /* Optional: Add overlay for better readability */
+    .stApp::before {
+        content: '';
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(255, 255, 255, 0.7);
+        z-index: 1;
+    }
+    
+    /* Ensure content stays above overlay */
+    .main .block-container {
+        position: relative;
+        z-index: 2;
     }
     </style>
     """, unsafe_allow_html=True)
