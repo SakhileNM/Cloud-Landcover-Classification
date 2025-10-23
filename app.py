@@ -410,13 +410,12 @@ def main_application():
             """)
 
             st.subheader("Per-Year Results")
-            for i, fig in enumerate(st.session_state.figures):
-                if i < len(st.session_state.selected_years):
-                    year = st.session_state.selected_years[i]
+            # Display figures in chronological order (oldest to newest)
+            sorted_years = sorted(st.session_state.selected_years)
+            for i, year in enumerate(sorted_years):
+                if i < len(st.session_state.figures):
                     st.write(f"### {year} Results")
-                    st.pyplot(fig)
-                else:
-                    st.pyplot(fig)
+                    st.pyplot(st.session_state.figures[i])
 
             st.subheader("Class Distribution Table")
             import pandas as pd
