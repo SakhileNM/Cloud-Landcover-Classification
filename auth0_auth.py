@@ -207,9 +207,18 @@ class Auth0Service:
 def show_auth0_login():
     if 'auth0_service' not in st.session_state:
         st.session_state.auth0_service = Auth0Service()
+        
+    img_path = 'images/Gemini_Generated_Image_pcdid5pcdid5pcdi.png"'
+    b64_background = get_base64_of_bin_file(img_path)
     
     st.markdown("""
     <style>
+    .stApp {
+        background-image: url("data:image/jpg;base64,{b64_background}");
+        background-size: cover;
+        background-position: center;
+        background-attachment: fixed;
+    }
     .login-container {
         max-width: 800px;
         margin: 0 auto;
