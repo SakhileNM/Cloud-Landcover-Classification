@@ -14,7 +14,7 @@ from device_oauth_drive import (
     build_drive_service_for_user,
     credentials_from_saved_token
 )
-
+import base64
 
 load_dotenv()
 
@@ -203,6 +203,12 @@ class Auth0Service:
         except Exception as e:
             st.error(f"Error loading analysis history: {e}")
             return []
+
+def get_base64_of_bin_file(bin_file):
+    """Convert binary file to base64 string"""
+    with open(bin_file, 'rb') as f:
+        data = f.read()
+    return base64.b64encode(data).decode()
 
 def show_auth0_login():
     if 'auth0_service' not in st.session_state:
