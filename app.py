@@ -410,14 +410,15 @@ def main_application():
             """)
 
             st.subheader("Per-Year Results")
-            # Display figures in chronological order (oldest to newest)
-            # Use the original figures list but sort the years for labeling
+            # Display figures in their original order but with sorted year labels
             sorted_years = sorted(st.session_state.selected_years)
-            
-            for i, year in enumerate(sorted_years):
-                if i < len(st.session_state.figures):
+            for i, fig in enumerate(st.session_state.figures):
+                if i < len(sorted_years):
+                    year = sorted_years[i]
                     st.write(f"### {year} Results")
-                    st.pyplot(st.session_state.figures[i])
+                    st.pyplot(fig)
+                else:
+                    st.pyplot(fig)
 
             st.subheader("Class Distribution Table")
             import pandas as pd
