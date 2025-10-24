@@ -209,6 +209,32 @@ def get_base64_of_bin_file(bin_file):
         data = f.read()
     return base64.b64encode(data).decode()
 
+def display_earthgo_logo():
+    """Display EarthGo logo centered at the top"""
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        try:
+            st.image("images/EarthGo Logo.png", width=250, use_column_width=False)
+            st.markdown("""
+            <div style="text-align: center; margin-top: 0.5rem;">
+                <p style="color: #666; font-size: 1.2rem; margin: 0;">
+                    Your Geospatial Landcover Classification Tool
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
+        except FileNotFoundError:
+            # Fallback to text logo if image not found
+            st.markdown("""
+            <div style="text-align: center; margin-bottom: 2rem;">
+                <h1 style="color: #1a73e8; font-size: 3rem; font-weight: bold; margin: 0;">
+                    EarthGo
+                </h1>
+                <p style="color: #666; font-size: 1.2rem; margin: 0;">
+                    Your Geospatial Landcover Classification Tool
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
+
 def show_auth0_login():
     if 'auth0_service' not in st.session_state:
         st.session_state.auth0_service = Auth0Service()
@@ -271,7 +297,7 @@ def show_auth0_login():
         # Project description
         st.markdown("""
 <div class="project-description">
-    <div class="project-title">Geospatial Landcover Classification Platform</div>
+    <div class="project-title">EarthGo</div>
     <p>This research project was developed by Sakhile Mkhize during his BEngTech Honours in Computer Engineering at CPUT. The research demonstrates how complex geospatial analysis tasks can be transformed into accessible, efficient processes through modern machine learning and cloud technologies.</p>
     <p>The platform features dual machine learning models - Random Forest and Gradient Boosting - trained on Western Cape regional data. Leveraging Digital Earth Africa's STAC dataset and deployed via Docker on Oracle Cloud infrastructure, the application enables stakeholders to accurately classify landcover using both Landsat and Sentinel satellite imagery from 1995 to 2023.</p>
     <p>Users can select specific locations, choose between individual models or automated model selection, analyze multiple years, and receive comprehensive results via email notifications or downloadable PDF reports stored locally or in Google Drive.</p>
