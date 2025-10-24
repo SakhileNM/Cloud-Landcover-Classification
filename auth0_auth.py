@@ -210,30 +210,28 @@ def get_base64_of_bin_file(bin_file):
     return base64.b64encode(data).decode()
 
 def display_earthgo_logo():
-    """Display EarthGo logo centered at the top"""
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        try:
-            st.image("images/cropped_circle_image.png", width=150)
-            st.markdown("""
-            <div style="text-align: center; margin-top: 0.5rem;">
-                <p style="color: #666; font-size: 1.2rem; margin: 0;">
-                    Your Geospatial Landcover Classification Tool
-                </p>
-            </div>
-            """, unsafe_allow_html=True)
-        except FileNotFoundError:
-            # Fallback to text logo if image not found
-            st.markdown("""
-            <div style="text-align: center; margin-bottom: 2rem;">
-                <h1 style="color: #1a73e8; font-size: 3rem; font-weight: bold; margin: 0;">
-                    EarthGo
-                </h1>
-                <p style="color: #666; font-size: 1.2rem; margin: 0;">
-                    Your Geospatial Landcover Classification Tool
-                </p>
-            </div>
-            """, unsafe_allow_html=True)
+    """Display EarthGo logo perfectly centered at the top"""
+    try:
+        st.markdown(f"""
+        <div style="display: flex; justify-content: center; align-items: center; flex-direction: column; margin-bottom: 2rem;">
+            <img src="images/cropped_circle_image.png" width="150" style="display: block; margin: 0 auto;">
+            <p style="color: #666; font-size: 1.2rem; margin: 0.5rem 0 0 0; text-align: center;">
+                Your Geospatial Landcover Classification Tool
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+    except FileNotFoundError:
+        # Fallback to text logo if image not found
+        st.markdown("""
+        <div style="text-align: center; margin-bottom: 2rem;">
+            <h1 style="color: #1a73e8; font-size: 3rem; font-weight: bold; margin: 0;">
+                EarthGo
+            </h1>
+            <p style="color: #666; font-size: 1.2rem; margin: 0;">
+                Your Geospatial Landcover Classification Tool
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
 
 def show_auth0_login():
     if 'auth0_service' not in st.session_state:
