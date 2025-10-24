@@ -214,7 +214,7 @@ def display_earthgo_logo():
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         try:
-            st.image("images/EarthGo Logo.png", use_container_width=True)
+            st.image("images/cropped_circle_image.png", use_container_width=True)
             st.markdown("""
             <div style="text-align: center; margin-top: 0.5rem;">
                 <p style="color: #666; font-size: 1.2rem; margin: 0;">
