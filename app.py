@@ -166,27 +166,48 @@ def main_application():
 
     # User welcome bar
     if st.session_state.user:
-        col1, col2, col3, col4 = st.columns([5, 1, 1, 1])
+        col1, col2, col3, col4, col5 = st.columns([2, 4, 1, 1, 1])
         with col1:
+            try:
+                st.image("images/EarthGo Logo.png", width=200, use_column_width=False)
+                st.markdown("""
+                <div style="text-align: center;">
+                    <p style="color: #666; font-size: 1.1rem; margin: 0;">
+                        Geospatial Landcover Classification Platform
+                    </p>
+                </div>
+                """, unsafe_allow_html=True)
+            except FileNotFoundError:
+                st.markdown("""
+                <div style="text-align: center; margin-bottom: 2rem;">
+                    <h1 style="color: #1a73e8; font-size: 2.5rem; font-weight: bold; margin: 0;">
+                        EarthGo
+                    </h1>
+                    <p style="color: #666; font-size: 1.1rem; margin: 0;">
+                        Geospatial Landcover Classification Platform
+                    </p>
+                </div>
+                """, unsafe_allow_html=True)
+        with col2:
             user = st.session_state.user
             
-            welcome_text = f"Welcome, {user['name']}! | Professional Geospatial Platform"
+            welcome_text = f"Welcome, {user['name']}!"
             if user.get('drive_connected'):
                 welcome_text += " <span class='status-badge'>Google Drive Connected</span>"
             if user.get('email_notifications'):
                 welcome_text += " <span class='status-badge'>Email Notifications ON</span>"
-            
+                
             st.markdown(f'<div class="user-welcome">{welcome_text}</div>', unsafe_allow_html=True)
         
-        with col2:
+        with col3:
             if st.button("Home", key="home_btn_main"):
                 st.session_state.show_profile = False
                 st.rerun()
-        with col3:
+        with col4:
             if st.button("Profile", key="profile_btn_main"):
                 st.session_state.show_profile = True
                 st.rerun()
-        with col4:
+        with col5:
             if st.button("Logout", key="logout_btn_main"):
                 for key in ['authenticated', 'user', 'access_token', 'show_profile']:
                     if key in st.session_state:
