@@ -73,7 +73,7 @@ class EmailService:
                 <h3>Analysis Details:</h3>
                 <ul>
                   <li><strong>Location:</strong> {analysis_details.get('location', 'N/A')}</li>
-                  <li><strong>Years Analyzed:</strong> {analysis_details.get('years', 'N/A')}</li>
+                  <li><strong>Years Analysed:</strong> {analysis_details.get('years', 'N/A')}</li>
                   <li><strong>Model Used:</strong> {analysis_details.get('model', 'N/A')}</li>
                   <li><strong>Completion Time:</strong> {analysis_details.get('completion_time', 'N/A')}</li>
                 </ul>
@@ -151,7 +151,7 @@ def save_analysis_to_history(lat, lon, years, model_type, results):
 def main_application():
     """Main application for authenticated users"""
     
-    # Initialize services
+    # Initialise services
     if 'dask_client' not in st.session_state:
         try:
             st.session_state.dask_client = init_dask_cluster()
@@ -549,7 +549,7 @@ def main_application():
     st.markdown("**Google Drive Integration** | **Secure Authentication** | **Geospatial AI**")
 
 def main():
-    # Initialize session state
+    # Initialise session state
     if 'authenticated' not in st.session_state:
         st.session_state.authenticated = False
     if 'user' not in st.session_state:
