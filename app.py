@@ -166,7 +166,7 @@ def main_application():
 
     # User welcome bar
     if st.session_state.user:
-        col1, col2, col3, col4, col5 = st.columns([2, 4, 1, 1, 1])
+        col1, col2 = st.columns([2, 4])
         with col1:
             try:
                 st.image("images/EarthGo Logo.png", width=200, use_column_width=False)
@@ -198,16 +198,15 @@ def main_application():
                 welcome_text += " <span class='status-badge'>Email Notifications ON</span>"
                 
             st.markdown(f'<div class="user-welcome">{welcome_text}</div>', unsafe_allow_html=True)
-        
-        with col3:
+
             if st.button("Home", key="home_btn_main"):
                 st.session_state.show_profile = False
                 st.rerun()
-        with col4:
+
             if st.button("Profile", key="profile_btn_main"):
                 st.session_state.show_profile = True
                 st.rerun()
-        with col5:
+
             if st.button("Logout", key="logout_btn_main"):
                 for key in ['authenticated', 'user', 'access_token', 'show_profile']:
                     if key in st.session_state:
