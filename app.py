@@ -166,28 +166,10 @@ def main_application():
 
     # User welcome bar
     if st.session_state.user:
-        col1, col2 = st.columns([2, 4])
+        col1, col2 = st.columns([1, 4])
         with col1:
-            try:
-                st.image("images/cropped_cicle_image.png", width=200, use_container_width=True)
-                st.markdown("""
-                <div style="text-align: center;">
-                    <p style="color: #666; font-size: 1.1rem; margin: 0;">
-                        Geospatial Landcover Classification Platform
-                    </p>
-                </div>
-                """, unsafe_allow_html=True)
-            except FileNotFoundError:
-                st.markdown("""
-                <div style="text-align: center; margin-bottom: 2rem;">
-                    <h1 style="color: #1a73e8; font-size: 2.5rem; font-weight: bold; margin: 0;">
-                        EarthGo
-                    </h1>
-                    <p style="color: #666; font-size: 1.1rem; margin: 0;">
-                        Geospatial Landcover Classification Platform
-                    </p>
-                </div>
-                """, unsafe_allow_html=True)
+            st.image("images/cropped_cicle_image.png", use_container_width=True)
+
         with col2:
             user = st.session_state.user
             
