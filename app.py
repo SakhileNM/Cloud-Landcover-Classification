@@ -168,7 +168,7 @@ def main_application():
     if st.session_state.user:
         col1, col2 = st.columns([1, 4])
         with col1:
-            st.image("images/cropped_cicle_image.png", use_container_width=True)
+            st.image("images/cropped_circle_image.png", width=80)
 
         with col2:
             user = st.session_state.user
