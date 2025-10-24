@@ -290,6 +290,8 @@ def show_auth0_login():
     }
     </style>
     """, unsafe_allow_html=True)
+
+    display_earthgo_logo()
     
     with st.container():
         st.markdown('<div class="login-container">', unsafe_allow_html=True)
