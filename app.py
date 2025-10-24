@@ -169,7 +169,7 @@ def main_application():
         col1, col2 = st.columns([2, 4])
         with col1:
             try:
-                st.image("images/EarthGo Logo.png", width=200, use_column_width=False)
+                st.image("images/EarthGo Logo.png", width=200, use_container_width=True)
                 st.markdown("""
                 <div style="text-align: center;">
                     <p style="color: #666; font-size: 1.1rem; margin: 0;">
