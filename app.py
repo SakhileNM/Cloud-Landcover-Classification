@@ -21,8 +21,8 @@ except:
 
 # Page configuration
 st.set_page_config(
-    page_title="Geospatial Landcover Classification Platform",
-    page_icon="🌍",
+    page_title="EarthGo - Geospatial Landcover Classification",
+    page_icon="images/EarthGo-Logo.ico",
     layout="wide",
     initial_sidebar_state="expanded"
 )
