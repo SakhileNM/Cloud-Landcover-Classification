@@ -213,7 +213,7 @@ def display_earthgo_logo():
     """Display EarthGo logo centered at the top"""
     # Adjust column ratios to properly center the logo
     # [2, 1, 2] ratio will center the logo better than [1, 2, 1]
-    col1, col2, col3 = st.columns([2, 1, 2])
+    col1, col2, col3 = st.columns([3, 1, 2])
     with col2:
         try:
             st.image("images/cropped_circle_image.png", width=150)
