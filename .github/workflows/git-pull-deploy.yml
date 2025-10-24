@@ -1,0 +1,29 @@
+name: Dev auto-update (git-pull)
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger git pull on server
+        uses: appleboy/ssh-action@v0.1.9
+        with:
+          host: ${{ secrets.REMOTE_HOST }}
+          username: ${{ secrets.REMOTE_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.REMOTE_PORT }}
+          script: |
+            set -e
+            cd /home/deploy/app
+
+            git fetch --all
+            git reset --hard origin/main
+
+            if [ -f requirements.txt ]; then
+              echo "Attempt pip install inside running container (if needed)"
+              docker exec -i landcover-dev bash -lc "pip install --upgrade -r /opt/app/requirements.txt || true"
+            fi
+            echo "pulled and updated"
